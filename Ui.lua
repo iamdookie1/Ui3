@@ -3,11 +3,14 @@
     Obsidian's layout and API, dressed in Syde's colors and style.
 
     Supported so far:
-        Library:CreateWindow
+        Library:CreateWindow / Library:Notify
         Window:AddTab
-        Tab:AddGroupbox / AddLeftGroupbox / AddRightGroupbox
-        Groupbox:AddToggle / AddButton / AddLabel / AddDivider / AddSlider / AddDropdown
-        Toggle:AddColorPicker / Label:AddColorPicker
+        Tab:AddGroupbox / AddLeftGroupbox / AddRightGroupbox / AddBigGroupbox
+        Groupbox:AddToggle / AddCheckbox / AddButton / AddLabel / AddDivider
+                 AddSlider / AddDropdown / AddInput
+        Big groupbox only: AddProgressBar / AddStatCards / AddLog
+        Toggle + Label addons: AddColorPicker / AddKeyPicker
+        Built-in settings panel (gear icon): menu keybind, accent, configs, unload
 ]]
 
 local cloneref = (cloneref or clonereference or function(Object)
@@ -19,6 +22,7 @@ local RunService = cloneref(game:GetService("RunService"))
 local TweenService = cloneref(game:GetService("TweenService"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
 local GuiService = cloneref(game:GetService("GuiService"))
+local HttpService = cloneref(game:GetService("HttpService"))
 local CoreGui = cloneref(game:GetService("CoreGui"))
 
 local LocalPlayer = Players.LocalPlayer
@@ -44,13 +48,26 @@ local Library = {
     Updaters = {},
     Signals = {},
     UnloadCallbacks = {},
+    ScrollFrames = {},
     Tabs = {},
 
     ActiveTab = nil,
     OpenedPopup = nil,
 
+    -- Set while the pointer is dragging something (slider, color map, window...).
+    -- Everything else ignores hovers and clicks until it's released.
+    Dragging = nil,
+    LastDragEnd = 0,
+    LastKeyPick = 0,
+
+    -- Config system
+    ConfigFolder = "Ui3",
+    IgnoreIndexes = {},
+    PendingConfig = {},
+
     Toggled = false,
     Unloaded = false,
+    ForceCheckbox = false,
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     CornerRadius = 8,
@@ -287,6 +304,19 @@ local function Sheen(Parent)
     })
 end
 
+local function MakeLine(Props)
+    Props.BackgroundColor3 = "OutlineColor"
+    return New("Frame", Props)
+end
+
+local function SemiBold()
+    return Font.new(Library.Scheme.Font.Family, Enum.FontWeight.SemiBold)
+end
+
+local function Bold()
+    return Font.new(Library.Scheme.Font.Family, Enum.FontWeight.Bold)
+end
+
 function Library:GiveSignal(Signal)
     table.insert(Library.Signals, Signal)
     return Signal
@@ -342,6 +372,12 @@ function Library:OnUnload(Callback)
     table.insert(Library.UnloadCallbacks, Callback)
 end
 
+-- False while something is being dragged (and for a moment after), so releasing a
+-- drag over a button or toggle never clicks it.
+function Library:CanInteract()
+    return Library.Dragging == nil and (os.clock() - Library.LastDragEnd) > 0.12
+end
+
 local function IsClick(Input)
     return Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch
 end
@@ -371,6 +407,11 @@ local function GetMousePosition()
     return UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
 end
 
+local function RegisterScroll(Frame)
+    table.insert(Library.ScrollFrames, Frame)
+    return Frame
+end
+
 --// ScreenGui \\--
 local ScreenGui = New("ScreenGui", {
     Name = "Ui3",
@@ -395,39 +436,154 @@ local function GetScreenSize()
     return Size
 end
 
--- Generic press-and-drag helper (mouse + touch).
-local function TrackDrag(Handle, OnStart, OnMove, OnEnd)
-    local Dragging = false
+--// Tooltips \\--
+local TooltipLabel = New("TextLabel", {
+    AutomaticSize = Enum.AutomaticSize.XY,
+    BackgroundColor3 = "MainColor",
+    BackgroundTransparency = 0,
+    Text = "",
+    TextSize = 12,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Visible = false,
+    ZIndex = 100,
+    Parent = ScreenGui,
+})
+Corner(TooltipLabel, 6)
+Stroke(TooltipLabel)
+Padding(TooltipLabel, 5, 5, 8, 8)
+New("UISizeConstraint", { MaxSize = Vector2.new(260, math.huge), Parent = TooltipLabel })
 
-    Handle.InputBegan:Connect(function(Input)
-        if not IsClick(Input) then
+local HoveredTooltip = nil
+
+local function HideTooltip()
+    HoveredTooltip = nil
+    TooltipLabel.Visible = false
+end
+
+-- Hover effects go through here so nothing lights up while something else is being dragged.
+local function OnHover(Object, Enter, Leave)
+    Object.MouseEnter:Connect(function()
+        if Library.Dragging then
             return
         end
-        Dragging = true
+        Enter()
+    end)
+    Object.MouseLeave:Connect(Leave)
+end
+
+function Library:AddTooltip(Text, DisabledText, HoverInstance)
+    local Tooltip = {
+        Text = Text,
+        DisabledText = DisabledText,
+        Disabled = false,
+    }
+
+    local function Current()
+        if Tooltip.Disabled then
+            return Tooltip.DisabledText
+        end
+        return Tooltip.Text
+    end
+
+    OnHover(HoverInstance, function()
+        local Str = Current()
+        if typeof(Str) ~= "string" or Str == "" then
+            return
+        end
+        HoveredTooltip = Tooltip
+        TooltipLabel.Text = Str
+        TooltipLabel.Visible = true
+    end, function()
+        if HoveredTooltip == Tooltip then
+            HideTooltip()
+        end
+    end)
+
+    return Tooltip
+end
+
+Library:GiveSignal(RunService.RenderStepped:Connect(function()
+    if not TooltipLabel.Visible then
+        return
+    end
+    if not Library.Toggled or Library.Dragging then
+        HideTooltip()
+        return
+    end
+    local Mouse = GetMousePosition()
+    TooltipLabel.Position = UDim2.fromOffset(math.floor(Mouse.X + 14), math.floor(Mouse.Y + 14))
+end))
+
+--// Dragging \\--
+local function SetScrolling(Enabled)
+    for _, Frame in Library.ScrollFrames do
+        Frame.ScrollingEnabled = Enabled
+    end
+end
+
+-- Generic press-and-drag helper (mouse + touch). While a drag is live, Library.Dragging
+-- is set, every scrolling frame is frozen, and other elements ignore hover/click.
+local function TrackDrag(Handle, OnStart, OnMove, OnEnd)
+    local Pressed = false
+    local Moved = false
+    local StartPosition
+
+    Handle.InputBegan:Connect(function(Input)
+        if not IsClick(Input) or Library.Dragging or Pressed then
+            return
+        end
+
+        Pressed = true
+        Moved = false
+        StartPosition = Input.Position
+        SetScrolling(false)
+
         if OnStart then
             OnStart(Input.Position)
         end
 
         local Ended
         Ended = Input.Changed:Connect(function()
-            if Input.UserInputState == Enum.UserInputState.End then
-                Dragging = false
-                Ended:Disconnect()
-                if OnEnd then
-                    OnEnd()
-                end
+            if Input.UserInputState ~= Enum.UserInputState.End then
+                return
+            end
+            Ended:Disconnect()
+            Pressed = false
+
+            if Moved then
+                Library.LastDragEnd = os.clock()
+            end
+            if Library.Dragging == Handle then
+                Library.Dragging = nil
+            end
+            SetScrolling(true)
+
+            if OnEnd then
+                OnEnd()
             end
         end)
     end)
 
     Library:GiveSignal(UserInputService.InputChanged:Connect(function(Input)
-        if Dragging and IsMove(Input) then
-            OnMove(Input.Position)
+        if not Pressed or not IsMove(Input) then
+            return
         end
+
+        if not Moved then
+            local Delta = Input.Position - StartPosition
+            if math.abs(Delta.X) + math.abs(Delta.Y) >= 3 then
+                Moved = true
+                Library.Dragging = Handle
+                HideTooltip()
+            end
+        end
+
+        OnMove(Input.Position)
     end))
 end
 
---// Popups (color pickers, dropdowns): live in the ScreenGui so groupboxes never clip them \\--
+--// Popups (color pickers, dropdowns, key modes): live in the ScreenGui so groupboxes never clip them \\--
 local function CloseOpenedPopup()
     if Library.OpenedPopup then
         Library.OpenedPopup:Close()
@@ -487,7 +643,7 @@ function Library:CreatePopup(Holder, Settings)
         local Size = Frame.AbsoluteSize / math.max(Scale.Scale, 0.01)
         local HolderPos, HolderSize = Holder.AbsolutePosition, Holder.AbsoluteSize
 
-        local X = Settings.Align == "Right" and (HolderPos.X + HolderSize.X - Size.X) or HolderPos.X
+        local X = if Settings.Align == "Right" then HolderPos.X + HolderSize.X - Size.X else HolderPos.X
         local Y = HolderPos.Y + HolderSize.Y + 6
         X = math.clamp(X, 6, math.max(6, Screen.X - Size.X - 6))
         if Y + Size.Y > Screen.Y - 6 then
@@ -555,72 +711,135 @@ function Library:CreatePopup(Holder, Settings)
     return Popup
 end
 
---// Tooltips \\--
-local TooltipLabel = New("TextLabel", {
-    AutomaticSize = Enum.AutomaticSize.XY,
-    BackgroundColor3 = "MainColor",
-    BackgroundTransparency = 0,
-    Text = "",
-    TextSize = 12,
-    TextWrapped = true,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    Visible = false,
-    ZIndex = 100,
+--// Notifications \\--
+local NotifyHolder = New("Frame", {
+    AnchorPoint = Vector2.new(1, 1),
+    BackgroundTransparency = 1,
+    Position = UDim2.new(1, -14, 1, -14),
+    Size = UDim2.new(0, 270, 1, -28),
+    ZIndex = 200,
     Parent = ScreenGui,
 })
-Corner(TooltipLabel, 6)
-Stroke(TooltipLabel)
-Padding(TooltipLabel, 5, 5, 8, 8)
-New("UISizeConstraint", { MaxSize = Vector2.new(260, math.huge), Parent = TooltipLabel })
+List(NotifyHolder, 8, { VerticalAlignment = Enum.VerticalAlignment.Bottom })
 
-local HoveredTooltip = nil
+local NotifyCount = 0
 
-function Library:AddTooltip(Text, DisabledText, HoverInstance)
-    local Tooltip = {
-        Text = Text,
-        DisabledText = DisabledText,
-        Disabled = false,
-    }
+function Library:Notify(Info, Time)
+    if typeof(Info) ~= "table" then
+        Info = { Title = tostring(Info), Time = Time }
+    end
+    local Duration = tonumber(Info.Time or Time) or 4
 
-    local function Current()
-        if Tooltip.Disabled then
-            return Tooltip.DisabledText
-        end
-        return Tooltip.Text
+    NotifyCount += 1
+
+    local Holder = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        LayoutOrder = NotifyCount,
+        Size = UDim2.fromScale(1, 0),
+        ZIndex = 200,
+        Parent = NotifyHolder,
+    })
+
+    local Card = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = "MainColor",
+        ClipsDescendants = true,
+        Position = UDim2.fromOffset(300, 0),
+        Size = UDim2.fromScale(1, 0),
+        ZIndex = 200,
+        Parent = Holder,
+    })
+    Corner(Card, 8)
+    Stroke(Card)
+
+    local Bar = New("Frame", {
+        BackgroundColor3 = "AccentColor",
+        Size = UDim2.new(0, 3, 1, 0),
+        ZIndex = 201,
+        Parent = Card,
+    })
+    Sheen(Bar)
+
+    local Content = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        ZIndex = 201,
+        Parent = Card,
+    })
+    Padding(Content, 10, 12, 14, 12)
+    List(Content, 3)
+
+    local Title = New("TextLabel", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        FontFace = SemiBold,
+        Size = UDim2.fromScale(1, 0),
+        Text = Info.Title or "Notification",
+        TextSize = 13,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 201,
+        Parent = Content,
+    })
+
+    local Description
+    if Info.Description then
+        Description = New("TextLabel", {
+            AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = 1,
+            Size = UDim2.fromScale(1, 0),
+            Text = Info.Description,
+            TextSize = 12,
+            TextTransparency = 0.4,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 201,
+            Parent = Content,
+        })
     end
 
-    HoverInstance.MouseEnter:Connect(function()
-        local Str = Current()
-        if typeof(Str) ~= "string" or Str == "" then
+    local Timer = New("Frame", {
+        AnchorPoint = Vector2.new(0, 1),
+        BackgroundColor3 = "AccentColor",
+        BackgroundTransparency = 0.4,
+        Position = UDim2.fromScale(0, 1),
+        Size = UDim2.new(1, 0, 0, 2),
+        ZIndex = 202,
+        Parent = Card,
+    })
+
+    local Notification = { Destroyed = false }
+
+    function Notification:Destroy()
+        if Notification.Destroyed then
             return
         end
-        HoveredTooltip = Tooltip
-        TooltipLabel.Text = Str
-        TooltipLabel.Visible = true
-    end)
+        Notification.Destroyed = true
+        local Out = Tween(Card, Library.TweenInfo, { Position = UDim2.fromOffset(300, 0) })
+        Out.Completed:Connect(function()
+            Holder:Destroy()
+        end)
+    end
 
-    HoverInstance.MouseLeave:Connect(function()
-        if HoveredTooltip == Tooltip then
-            HoveredTooltip = nil
-            TooltipLabel.Visible = false
+    function Notification:SetTitle(Text)
+        Title.Text = Text
+    end
+
+    function Notification:SetDescription(Text)
+        if Description then
+            Description.Text = Text
         end
+    end
+
+    Tween(Card, Library.TweenInfo, { Position = UDim2.fromOffset(0, 0) })
+    Tween(Timer, TweenInfo.new(Duration, Enum.EasingStyle.Linear), { Size = UDim2.new(0, 0, 0, 2) })
+    task.delay(Duration, function()
+        Notification:Destroy()
     end)
 
-    return Tooltip
+    return Notification
 end
-
-Library:GiveSignal(RunService.RenderStepped:Connect(function()
-    if not TooltipLabel.Visible then
-        return
-    end
-    if not Library.Toggled then
-        TooltipLabel.Visible = false
-        HoveredTooltip = nil
-        return
-    end
-    local Mouse = GetMousePosition()
-    TooltipLabel.Position = UDim2.fromOffset(math.floor(Mouse.X + 14), math.floor(Mouse.Y + 14))
-end))
 
 --// Global input \\--
 Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input, Processed)
@@ -632,11 +851,11 @@ Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input, Processed
         end
     end
 
-    if Processed then
+    if Processed or Library.PickingKey or os.clock() - Library.LastKeyPick < 0.05 then
         return
     end
 
-    if Input.KeyCode == Library.ToggleKeybind and Library.Window then
+    if Library.ToggleKeybind and Input.KeyCode == Library.ToggleKeybind and Library.Window then
         Library:Toggle()
     end
 end))
@@ -653,6 +872,7 @@ local Templates = {
         SidebarWidth = 190,
         CornerRadius = 10,
         ToggleKeybind = Enum.KeyCode.RightControl,
+        ShowSettings = true,
     },
     Groupbox = {
         Side = "Left",
@@ -668,6 +888,14 @@ local Templates = {
     },
     ColorPicker = {
         Default = Color3.new(1, 1, 1),
+        Callback = function() end,
+    },
+    KeyPicker = {
+        Default = "None",
+        Mode = "Toggle",
+        Text = "Keybind",
+        SyncToggleState = false,
+        NoMode = false,
         Callback = function() end,
     },
     Slider = {
@@ -695,9 +923,57 @@ local Templates = {
         Visible = true,
         Callback = function() end,
     },
+    Input = {
+        Text = "Input",
+        Default = "",
+        Placeholder = "",
+        Numeric = false,
+        Finished = false,
+        ClearTextOnFocus = false,
+        Disabled = false,
+        Visible = true,
+        Callback = function() end,
+    },
+    ProgressBar = {
+        Text = "Progress",
+        Default = 0,
+        Max = 100,
+        Rounding = 0,
+        Suffix = "",
+        Percent = true,
+    },
+    StatCards = {
+        Cards = {},
+    },
+    Log = {
+        Text = nil,
+        Height = 150,
+        MaxLines = 200,
+        Timestamps = true,
+    },
 }
 
---// Elements shared by every container (groupboxes for now) \\--
+-- Registers an element and applies any value waiting for it from the autoload config,
+-- so autoload works no matter when (or how late) the element is created.
+local function RegisterElement(Idx, Element, IsToggle)
+    if Idx == nil then
+        return
+    end
+
+    if IsToggle then
+        Toggles[Idx] = Element
+    else
+        Options[Idx] = Element
+    end
+
+    local Pending = Library.PendingConfig[Idx]
+    if Pending then
+        Library.PendingConfig[Idx] = nil
+        Library:ApplyConfigEntry(Pending)
+    end
+end
+
+--// Elements shared by every container \\--
 local Funcs = {}
 
 function Funcs:AddColorPicker(Idx, Info)
@@ -1002,15 +1278,247 @@ function Funcs:AddColorPicker(Idx, Info)
     ColorPicker.Popup = Popup
 
     Holder.MouseButton1Click:Connect(function()
+        if not Library:CanInteract() then
+            return
+        end
         Popup:Toggle()
     end)
 
     ColorPicker:Display()
 
-    Options[Idx] = ColorPicker
     if ParentObj.Addons then
         table.insert(ParentObj.Addons, ColorPicker)
     end
+    RegisterElement(Idx, ColorPicker)
+
+    return self
+end
+
+local function KeyFromInput(Input)
+    local Type = Input.UserInputType
+    if Type == Enum.UserInputType.MouseButton1 then
+        return "MB1"
+    elseif Type == Enum.UserInputType.MouseButton2 then
+        return "MB2"
+    elseif Type == Enum.UserInputType.MouseButton3 then
+        return "MB3"
+    elseif Type == Enum.UserInputType.Keyboard then
+        return Input.KeyCode.Name
+    end
+    return nil
+end
+
+function Funcs:AddKeyPicker(Idx, Info)
+    Info = Library:Validate(Info, Templates.KeyPicker)
+
+    local ParentObj = self
+    local AddonHolder = ParentObj.TextLabel
+    assert(AddonHolder, "AddKeyPicker must be called on a toggle or a label")
+
+    local KeyPicker = {
+        Value = Info.Default,
+        Mode = Info.Mode,
+        Text = Info.Text,
+        Toggled = false,
+        Holding = false,
+        Picking = false,
+        SyncToggleState = Info.SyncToggleState,
+
+        Callback = Info.Callback,
+        ChangedCallback = Info.ChangedCallback,
+        Changed = nil,
+        Clicked = nil,
+        Type = "KeyPicker",
+    }
+
+    if KeyPicker.SyncToggleState and ParentObj.Type == "Toggle" then
+        KeyPicker.Toggled = ParentObj.Value
+    end
+
+    local Button = New("TextButton", {
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = "SecondaryColor",
+        Size = UDim2.fromOffset(0, 18),
+        Text = "",
+        TextSize = 11,
+        TextTransparency = 0.25,
+        Parent = AddonHolder,
+    })
+    Corner(Button, 5)
+    Padding(Button, 0, 0, 7, 7)
+    local ButtonStroke = Stroke(Button)
+
+    function KeyPicker:Display()
+        Button.Text = KeyPicker.Picking and "..." or tostring(KeyPicker.Value)
+    end
+
+    function KeyPicker:GetState()
+        if KeyPicker.Mode == "Always" then
+            return true
+        elseif KeyPicker.Mode == "Hold" then
+            return KeyPicker.Holding
+        end
+        return KeyPicker.Toggled
+    end
+
+    function KeyPicker:OnChanged(Func)
+        KeyPicker.Changed = Func
+    end
+
+    function KeyPicker:OnClick(Func)
+        KeyPicker.Clicked = Func
+    end
+
+    function KeyPicker:SetValue(Data)
+        local Key, Mode
+        if typeof(Data) == "table" then
+            Key, Mode = Data[1], Data[2]
+        else
+            Key = Data
+        end
+
+        local OldKey = KeyPicker.Value
+        KeyPicker.Value = Key or KeyPicker.Value
+        if Mode == "Toggle" or Mode == "Hold" or Mode == "Always" then
+            KeyPicker.Mode = Mode
+        end
+        KeyPicker:Display()
+
+        if KeyPicker.Value ~= OldKey then
+            Library:SafeCallback(KeyPicker.ChangedCallback, KeyPicker.Value)
+            Library:SafeCallback(KeyPicker.Changed, KeyPicker.Value)
+        end
+    end
+
+    local function SetPicking(Picking)
+        KeyPicker.Picking = Picking
+        if Picking then
+            Library.PickingKey = KeyPicker
+        elseif Library.PickingKey == KeyPicker then
+            Library.PickingKey = nil
+        end
+        SetThemed(ButtonStroke, "Color", Picking and "AccentColor" or "OutlineColor", Library.FastTweenInfo)
+        KeyPicker:Display()
+    end
+
+    -- Mode menu (right click)
+    local ModePopup
+    if not Info.NoMode then
+        ModePopup = Library:CreatePopup(Button, { Width = 96, Align = "Right", AutoHeight = true })
+        Padding(ModePopup.Frame, 4)
+        List(ModePopup.Frame, 2)
+
+        local ModeButtons = {}
+        local function RefreshModes()
+            for Mode, ModeButton in ModeButtons do
+                SetThemed(ModeButton, "TextColor3", KeyPicker.Mode == Mode and "AccentColor" or "FontColor", false)
+                ModeButton.TextTransparency = KeyPicker.Mode == Mode and 0 or 0.4
+            end
+        end
+
+        for Order, Mode in { "Toggle", "Hold", "Always" } do
+            local ModeButton = New("TextButton", {
+                BackgroundColor3 = "SecondaryColor",
+                BackgroundTransparency = 1,
+                LayoutOrder = Order,
+                Size = UDim2.new(1, 0, 0, 24),
+                Text = Mode,
+                TextSize = 12,
+                ZIndex = 52,
+                Parent = ModePopup.Frame,
+            })
+            Corner(ModeButton, 5)
+            OnHover(ModeButton, function()
+                Tween(ModeButton, Library.FastTweenInfo, { BackgroundTransparency = 0 })
+            end, function()
+                Tween(ModeButton, Library.FastTweenInfo, { BackgroundTransparency = 1 })
+            end)
+            ModeButton.MouseButton1Click:Connect(function()
+                KeyPicker.Mode = Mode
+                KeyPicker.Holding = false
+                RefreshModes()
+                ModePopup:Close()
+            end)
+            ModeButtons[Mode] = ModeButton
+        end
+
+        ModePopup.OnOpen = RefreshModes
+    end
+
+    Button.MouseButton1Click:Connect(function()
+        if not Library:CanInteract() then
+            return
+        end
+        SetPicking(true)
+    end)
+
+    Button.MouseButton2Click:Connect(function()
+        if ModePopup and Library:CanInteract() then
+            ModePopup:Toggle()
+        end
+    end)
+
+    local function SetState(State)
+        Library:SafeCallback(KeyPicker.Callback, State)
+    end
+
+    Library:GiveSignal(UserInputService.InputBegan:Connect(function(Input, Processed)
+        if KeyPicker.Picking then
+            local Key = KeyFromInput(Input)
+            if not Key then
+                return
+            end
+            if Key == "Escape" or Key == "Backspace" then
+                Key = "None"
+            end
+
+            Library.LastKeyPick = os.clock()
+            SetPicking(false)
+            KeyPicker:SetValue({ Key })
+            return
+        end
+
+        if KeyPicker.Value == "None" or Library.Unloaded then
+            return
+        end
+        -- Another picker is listening for a new key, or one just finished: this press isn't a trigger.
+        if Library.PickingKey or os.clock() - Library.LastKeyPick < 0.05 then
+            return
+        end
+        if Processed and Input.UserInputType == Enum.UserInputType.Keyboard then
+            return
+        end
+        if KeyFromInput(Input) ~= KeyPicker.Value then
+            return
+        end
+
+        Library:SafeCallback(KeyPicker.Clicked)
+
+        if KeyPicker.Mode == "Toggle" then
+            KeyPicker.Toggled = not KeyPicker.Toggled
+            if KeyPicker.SyncToggleState and ParentObj.Type == "Toggle" then
+                ParentObj:SetValue(KeyPicker.Toggled)
+            end
+            SetState(KeyPicker.Toggled)
+        elseif KeyPicker.Mode == "Hold" then
+            KeyPicker.Holding = true
+            SetState(true)
+        end
+    end))
+
+    Library:GiveSignal(UserInputService.InputEnded:Connect(function(Input)
+        if KeyPicker.Mode == "Hold" and KeyPicker.Holding and KeyFromInput(Input) == KeyPicker.Value then
+            KeyPicker.Holding = false
+            SetState(false)
+        end
+    end))
+
+    KeyPicker:Display()
+
+    if ParentObj.Addons then
+        table.insert(ParentObj.Addons, KeyPicker)
+    end
+    RegisterElement(Idx, KeyPicker)
 
     return self
 end
@@ -1094,7 +1602,7 @@ function Funcs:AddDivider(Text)
             HorizontalFlex = Enum.UIFlexAlignment.Fill,
             VerticalAlignment = Enum.VerticalAlignment.Center,
         })
-        New("Frame", { BackgroundColor3 = "OutlineColor", Size = UDim2.new(1, 0, 0, 1), Parent = Holder })
+        MakeLine({ Size = UDim2.new(1, 0, 0, 1), Parent = Holder })
         local Label = New("TextLabel", {
             AutomaticSize = Enum.AutomaticSize.X,
             LayoutOrder = 1,
@@ -1105,23 +1613,17 @@ function Funcs:AddDivider(Text)
             Parent = Holder,
         })
         New("UIFlexItem", { FlexMode = Enum.UIFlexMode.None, Parent = Label })
-        New("Frame", { BackgroundColor3 = "OutlineColor", LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 1), Parent = Holder })
+        MakeLine({ LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 1), Parent = Holder })
     else
-        New("Frame", {
-            BackgroundColor3 = "OutlineColor",
-            Position = UDim2.fromOffset(0, 2),
-            Size = UDim2.new(1, 0, 0, 1),
-            Parent = Holder,
-        })
+        MakeLine({ Position = UDim2.fromOffset(0, 2), Size = UDim2.new(1, 0, 0, 1), Parent = Holder })
     end
 
     return Holder
 end
 
-function Funcs:AddToggle(Idx, Info)
+-- Toggles and checkboxes share everything except the visual on the right/left.
+local function BuildToggle(Groupbox, Idx, Info, Variant)
     Info = Library:Validate(Info, Templates.Toggle)
-
-    local Groupbox = self
 
     local Toggle = {
         Text = Info.Text,
@@ -1134,8 +1636,11 @@ function Funcs:AddToggle(Idx, Info)
         Visible = Info.Visible,
 
         Addons = {},
+        Variant = Variant,
         Type = "Toggle",
     }
+
+    local IsCheckbox = Variant == "Checkbox"
 
     local Button = New("TextButton", {
         BackgroundTransparency = 1,
@@ -1145,7 +1650,8 @@ function Funcs:AddToggle(Idx, Info)
     })
 
     local Label = New("TextLabel", {
-        Size = UDim2.new(1, -44, 1, 0),
+        Position = UDim2.fromOffset(IsCheckbox and 28 or 0, 0),
+        Size = UDim2.new(1, IsCheckbox and -28 or -44, 1, 0),
         Text = Toggle.Text,
         TextColor3 = Toggle.Risky and "RedColor" or "FontColor",
         TextTransparency = 0.4,
@@ -1158,26 +1664,61 @@ function Funcs:AddToggle(Idx, Info)
         VerticalAlignment = Enum.VerticalAlignment.Center,
     })
 
-    -- Obsidian switch with a Syde accent fill.
-    local Switch = New("Frame", {
-        AnchorPoint = Vector2.new(1, 0),
-        BackgroundColor3 = "SecondaryColor",
-        Position = UDim2.new(1, 0, 0, 1),
-        Size = UDim2.fromOffset(34, 18),
-        Parent = Button,
-    })
-    Corner(Switch, UDim.new(1, 0))
-    Padding(Switch, 3)
-    local SwitchStroke = Stroke(Switch)
-    Sheen(Switch)
+    local Box, BoxStroke, Ball, Check
+    if IsCheckbox then
+        -- Syde-style checkbox: accent fill + check mark.
+        Box = New("Frame", {
+            BackgroundColor3 = "SecondaryColor",
+            Position = UDim2.fromOffset(0, 1),
+            Size = UDim2.fromOffset(18, 18),
+            Parent = Button,
+        })
+        Corner(Box, 5)
+        BoxStroke = Stroke(Box)
+        Sheen(Box)
 
-    local Ball = New("Frame", {
-        BackgroundColor3 = "FontColor",
-        BackgroundTransparency = 0.5,
-        Size = UDim2.fromOffset(12, 12),
-        Parent = Switch,
-    })
-    Corner(Ball, UDim.new(1, 0))
+        local CheckIcon = Library:GetIcon("check")
+        if CheckIcon then
+            Check = New("ImageLabel", {
+                ImageColor3 = "BackgroundColor",
+                ImageTransparency = 1,
+                Position = UDim2.fromOffset(2, 2),
+                Size = UDim2.fromOffset(14, 14),
+                Parent = Box,
+            })
+            ApplyIcon(Check, CheckIcon)
+        else
+            Check = New("TextLabel", {
+                Size = UDim2.fromScale(1, 1),
+                Text = "✓",
+                TextColor3 = "BackgroundColor",
+                TextSize = 13,
+                TextTransparency = 1,
+                Parent = Box,
+            })
+        end
+    else
+        -- Obsidian switch with a Syde accent fill.
+        Box = New("Frame", {
+            AnchorPoint = Vector2.new(1, 0),
+            BackgroundColor3 = "SecondaryColor",
+            Position = UDim2.new(1, 0, 0, 1),
+            Size = UDim2.fromOffset(34, 18),
+            Parent = Button,
+        })
+        Corner(Box, UDim.new(1, 0))
+        Padding(Box, 3)
+        BoxStroke = Stroke(Box)
+        Sheen(Box)
+
+        Ball = New("Frame", {
+            BackgroundColor3 = "FontColor",
+            BackgroundTransparency = 0.5,
+            Size = UDim2.fromOffset(12, 12),
+            Parent = Box,
+        })
+        Corner(Ball, UDim.new(1, 0))
+    end
 
     Toggle.TextLabel = Label
     Toggle.Container = Groupbox.Container
@@ -1189,30 +1730,36 @@ function Funcs:AddToggle(Idx, Info)
     function Toggle:Display(Instant)
         local TweenData = if Instant then false else Library.TweenInfo
         local On = Toggle.Value
-        local Offset = On and 1 or 0
 
-        SetThemed(Switch, "BackgroundColor3", On and "AccentColor" or "SecondaryColor", TweenData)
-        SetThemed(SwitchStroke, "Color", On and "AccentColor" or "OutlineColor", TweenData)
+        SetThemed(Box, "BackgroundColor3", On and "AccentColor" or "SecondaryColor", TweenData)
+        SetThemed(BoxStroke, "Color", On and "AccentColor" or "OutlineColor", TweenData)
 
-        local BallGoal = {
-            AnchorPoint = Vector2.new(Offset, 0),
-            Position = UDim2.fromScale(Offset, 0),
-            BackgroundTransparency = On and 0 or 0.5,
-        }
-        local LabelGoal = { TextTransparency = Toggle.Disabled and 0.8 or (On and 0 or 0.4) }
-
-        if Instant then
-            for Key, Value in BallGoal do
-                Ball[Key] = Value
-            end
-            Label.TextTransparency = LabelGoal.TextTransparency
+        local Goals = {}
+        if Ball then
+            local Offset = On and 1 or 0
+            Goals[Ball] = {
+                AnchorPoint = Vector2.new(Offset, 0),
+                Position = UDim2.fromScale(Offset, 0),
+                BackgroundTransparency = On and 0 or 0.5,
+            }
         else
-            Tween(Ball, Library.TweenInfo, BallGoal)
-            Tween(Label, Library.FastTweenInfo, LabelGoal)
+            Goals[Check] = Check:IsA("ImageLabel") and { ImageTransparency = On and 0 or 1 }
+                or { TextTransparency = On and 0 or 1 }
+        end
+        Goals[Label] = { TextTransparency = Toggle.Disabled and 0.8 or (On and 0 or 0.4) }
+
+        for Object, Goal in Goals do
+            if Instant then
+                for Key, Value in Goal do
+                    Object[Key] = Value
+                end
+            else
+                Tween(Object, Object == Label and Library.FastTweenInfo or Library.TweenInfo, Goal)
+            end
         end
 
-        Switch.BackgroundTransparency = Toggle.Disabled and 0.6 or 0
-        SwitchStroke.Transparency = Toggle.Disabled and 0.6 or 0
+        Box.BackgroundTransparency = Toggle.Disabled and 0.6 or 0
+        BoxStroke.Transparency = Toggle.Disabled and 0.6 or 0
     end
 
     function Toggle:OnChanged(Func)
@@ -1222,6 +1769,13 @@ function Funcs:AddToggle(Idx, Info)
     function Toggle:SetValue(Value)
         Toggle.Value = not not Value
         Toggle:Display()
+
+        for _, Addon in Toggle.Addons do
+            if Addon.Type == "KeyPicker" and Addon.SyncToggleState then
+                Addon.Toggled = Toggle.Value
+            end
+        end
+
         Library:SafeCallback(Toggle.Callback, Toggle.Value)
         Library:SafeCallback(Toggle.Changed, Toggle.Value)
     end
@@ -1245,19 +1799,18 @@ function Funcs:AddToggle(Idx, Info)
         Button.Visible = Visible
     end
 
-    Button.MouseEnter:Connect(function()
+    OnHover(Button, function()
         if not Toggle.Disabled and not Toggle.Value then
             Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.15 })
         end
-    end)
-    Button.MouseLeave:Connect(function()
+    end, function()
         if not Toggle.Disabled and not Toggle.Value then
             Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.4 })
         end
     end)
 
     Button.MouseButton1Click:Connect(function()
-        if Toggle.Disabled then
+        if Toggle.Disabled or not Library:CanInteract() then
             return
         end
         Toggle:SetValue(not Toggle.Value)
@@ -1275,8 +1828,16 @@ function Funcs:AddToggle(Idx, Info)
 
     setmetatable(Toggle, { __index = Funcs })
 
-    Toggles[Idx] = Toggle
+    RegisterElement(Idx, Toggle, true)
     return Toggle
+end
+
+function Funcs:AddToggle(Idx, Info)
+    return BuildToggle(self, Idx, Info, Library.ForceCheckbox and "Checkbox" or "Switch")
+end
+
+function Funcs:AddCheckbox(Idx, Info)
+    return BuildToggle(self, Idx, Info, "Checkbox")
 end
 
 function Funcs:AddButton(...)
@@ -1377,7 +1938,7 @@ function Funcs:AddButton(...)
             Base.Visible = Visible
         end
 
-        Base.MouseEnter:Connect(function()
+        OnHover(Base, function()
             if Button.Disabled then
                 return
             end
@@ -1385,8 +1946,7 @@ function Funcs:AddButton(...)
             SetThemed(Base, "BackgroundColor3", function()
                 return Library.Scheme.SecondaryColor:Lerp(Library.Scheme.FontColor, 0.04)
             end, Library.FastTweenInfo)
-        end)
-        Base.MouseLeave:Connect(function()
+        end, function()
             if Button.Disabled then
                 return
             end
@@ -1426,14 +1986,14 @@ function Funcs:AddButton(...)
         end
 
         Base.InputBegan:Connect(function(Input)
-            if IsClick(Input) and not Button.Disabled then
+            if IsClick(Input) and not Button.Disabled and Library:CanInteract() then
                 Ripple(Input.Position)
             end
         end)
 
         local ArmId = 0
         Base.MouseButton1Click:Connect(function()
-            if Button.Disabled then
+            if Button.Disabled or not Library:CanInteract() then
                 return
             end
 
@@ -1499,6 +2059,152 @@ function Funcs:AddButton(...)
     end
 
     return Button
+end
+
+function Funcs:AddInput(Idx, Info)
+    Info = Library:Validate(Info, Templates.Input)
+
+    local Groupbox = self
+
+    local Input = {
+        Text = Info.Text,
+        Value = "",
+        Numeric = Info.Numeric,
+        Finished = Info.Finished,
+        MaxLength = Info.MaxLength,
+
+        Callback = Info.Callback,
+        Changed = Info.Changed,
+
+        Disabled = Info.Disabled,
+        Visible = Info.Visible,
+        Type = "Input",
+    }
+
+    local Holder = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Visible = Input.Visible,
+        Parent = Groupbox.Container,
+    })
+    List(Holder, 5)
+
+    local Label = New("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 16),
+        Text = Input.Text or "",
+        TextTransparency = 0.4,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Visible = Input.Text ~= nil and Input.Text ~= "",
+        Parent = Holder,
+    })
+
+    local Box = New("TextBox", {
+        BackgroundColor3 = "SecondaryColor",
+        ClearTextOnFocus = Info.ClearTextOnFocus,
+        LayoutOrder = 1,
+        PlaceholderText = Info.Placeholder,
+        Size = UDim2.new(1, 0, 0, 30),
+        Text = "",
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Holder,
+    })
+    Corner(Box, 6)
+    Padding(Box, 0, 0, 10, 10)
+    local BoxStroke = Stroke(Box)
+
+    Input.TextLabel = Label
+    Input.TextBox = Box
+
+    if Info.Tooltip or Info.DisabledTooltip then
+        Input.TooltipTable = Library:AddTooltip(Info.Tooltip, Info.DisabledTooltip, Box)
+    end
+
+    local function Clean(Text)
+        Text = tostring(Text or "")
+        if Input.Numeric then
+            Text = Text:gsub("[^%d%.%-]", "")
+        end
+        if Input.MaxLength and #Text > Input.MaxLength then
+            Text = Text:sub(1, Input.MaxLength)
+        end
+        return Text
+    end
+
+    function Input:OnChanged(Func)
+        Input.Changed = Func
+    end
+
+    function Input:SetValue(Text)
+        Text = Clean(Text)
+        if Box.Text ~= Text then
+            Box.Text = Text
+        end
+        if Text == Input.Value then
+            return
+        end
+        Input.Value = Text
+        Library:SafeCallback(Input.Callback, Input.Value)
+        Library:SafeCallback(Input.Changed, Input.Value)
+    end
+
+    function Input:SetText(Text)
+        Input.Text = Text
+        Label.Text = Text or ""
+        Label.Visible = Text ~= nil and Text ~= ""
+    end
+
+    function Input:SetDisabled(Disabled)
+        Input.Disabled = Disabled
+        Box.TextEditable = not Disabled
+        Box.TextTransparency = Disabled and 0.7 or 0
+        Label.TextTransparency = Disabled and 0.8 or 0.4
+        BoxStroke.Transparency = Disabled and 0.5 or 0
+        if Input.TooltipTable then
+            Input.TooltipTable.Disabled = Disabled
+        end
+    end
+
+    function Input:SetVisible(Visible)
+        Input.Visible = Visible
+        Holder.Visible = Visible
+    end
+
+    Box:GetPropertyChangedSignal("Text"):Connect(function()
+        local Cleaned = Clean(Box.Text)
+        if Cleaned ~= Box.Text then
+            Box.Text = Cleaned
+            return
+        end
+        if not Input.Finished then
+            Input:SetValue(Cleaned)
+        end
+    end)
+
+    Box.Focused:Connect(function()
+        SetThemed(BoxStroke, "Color", "AccentColor", Library.FastTweenInfo)
+    end)
+    Box.FocusLost:Connect(function(EnterPressed)
+        SetThemed(BoxStroke, "Color", "OutlineColor", Library.FastTweenInfo)
+        if Input.Finished then
+            if EnterPressed then
+                Input:SetValue(Box.Text)
+            else
+                Box.Text = Input.Value
+            end
+        end
+    end)
+
+    -- Set the default without firing callbacks, like every other element.
+    Input.Value = Clean(Info.Default)
+    Box.Text = Input.Value
+    Input:SetDisabled(Input.Disabled)
+
+    setmetatable(Input, { __index = Funcs })
+
+    RegisterElement(Idx, Input)
+    return Input
 end
 
 function Funcs:AddSlider(Idx, Info)
@@ -1750,20 +2456,23 @@ function Funcs:AddSlider(Idx, Info)
         end
         Dragging = true
         Tween(Knob, Library.FastTweenInfo, { Size = UDim2.fromOffset(14, 14) })
+        Tween(Label, Library.FastTweenInfo, { TextTransparency = 0 })
         SetFromPosition(Position)
     end, SetFromPosition, function()
         Dragging = false
         Tween(Knob, Library.FastTweenInfo, { Size = UDim2.fromOffset(12, 12) })
+        if not Slider.Disabled then
+            Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.4 })
+        end
     end)
 
-    Holder.MouseEnter:Connect(function()
+    OnHover(Holder, function()
         if not Slider.Disabled then
             Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.1 })
             Tween(ValueBox, Library.FastTweenInfo, { TextTransparency = 0.1 })
         end
-    end)
-    Holder.MouseLeave:Connect(function()
-        if not Slider.Disabled then
+    end, function()
+        if not Slider.Disabled and not Dragging then
             Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.4 })
             Tween(ValueBox, Library.FastTweenInfo, { TextTransparency = 0.4 })
         end
@@ -1786,7 +2495,7 @@ function Funcs:AddSlider(Idx, Info)
 
     setmetatable(Slider, { __index = Funcs })
 
-    Options[Idx] = Slider
+    RegisterElement(Idx, Slider)
     return Slider
 end
 
@@ -1949,7 +2658,7 @@ function Funcs:AddDropdown(Idx, Info)
         end)
     end
 
-    local ListFrame = New("ScrollingFrame", {
+    local ListFrame = RegisterScroll(New("ScrollingFrame", {
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.fromScale(0, 0),
         LayoutOrder = 1,
@@ -1959,7 +2668,7 @@ function Funcs:AddDropdown(Idx, Info)
         Size = UDim2.new(1, 0, 0, RowHeight),
         ZIndex = 51,
         Parent = Menu,
-    })
+    }))
     List(ListFrame, RowGap)
 
     local EmptyLabel = New("TextLabel", {
@@ -2160,17 +2869,16 @@ function Funcs:AddDropdown(Idx, Info)
                 end
             end
 
-            Button.MouseEnter:Connect(function()
+            OnHover(Button, function()
                 if not IsValueDisabled(Value) then
                     Tween(Button, Library.FastTweenInfo, { BackgroundTransparency = 0 })
                 end
-            end)
-            Button.MouseLeave:Connect(function()
+            end, function()
                 Tween(Button, Library.FastTweenInfo, { BackgroundTransparency = 1 })
             end)
 
             Button.MouseButton1Click:Connect(function()
-                if Dropdown.Disabled or IsValueDisabled(Value) then
+                if Dropdown.Disabled or IsValueDisabled(Value) or not Library:CanInteract() then
                     return
                 end
 
@@ -2364,19 +3072,18 @@ function Funcs:AddDropdown(Idx, Info)
         SearchBox:GetPropertyChangedSignal("Text"):Connect(ApplySearch)
     end
 
-    Box.MouseEnter:Connect(function()
+    OnHover(Box, function()
         if not Dropdown.Disabled then
             Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.1 })
         end
-    end)
-    Box.MouseLeave:Connect(function()
+    end, function()
         if not Dropdown.Disabled then
             Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.4 })
         end
     end)
 
     Box.MouseButton1Click:Connect(function()
-        if Dropdown.Disabled then
+        if Dropdown.Disabled or not Library:CanInteract() then
             return
         end
         Popup:Toggle()
@@ -2440,8 +3147,701 @@ function Funcs:AddDropdown(Idx, Info)
 
     setmetatable(Dropdown, { __index = Funcs })
 
-    Options[Idx] = Dropdown
+    RegisterElement(Idx, Dropdown)
     return Dropdown
+end
+
+--// Big groupbox only elements \\--
+local function RequireBig(Groupbox, Name)
+    assert(Groupbox.IsBig, Name .. " can only be added to a big groupbox (Tab:AddBigGroupbox)")
+end
+
+function Funcs:AddProgressBar(Idx, Info)
+    RequireBig(self, "AddProgressBar")
+    Info = Library:Validate(Info, Templates.ProgressBar)
+
+    local ProgressBar = {
+        Text = Info.Text,
+        Value = 0,
+        Max = Info.Max,
+        Rounding = Info.Rounding,
+        Suffix = Info.Suffix,
+        Percent = Info.Percent,
+        Changed = nil,
+        Type = "ProgressBar",
+    }
+
+    local Holder = New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+        Parent = self.Container,
+    })
+
+    local Label = New("TextLabel", {
+        Size = UDim2.new(1, -110, 0, 16),
+        Text = ProgressBar.Text,
+        TextTransparency = 0.3,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Holder,
+    })
+
+    local ValueLabel = New("TextLabel", {
+        AnchorPoint = Vector2.new(1, 0),
+        FontFace = SemiBold,
+        Position = UDim2.fromScale(1, 0),
+        Size = UDim2.fromOffset(110, 16),
+        Text = "",
+        TextColor3 = "AccentColor",
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Parent = Holder,
+    })
+
+    local Track = New("Frame", {
+        AnchorPoint = Vector2.new(0, 1),
+        BackgroundColor3 = "SecondaryColor",
+        ClipsDescendants = true,
+        Position = UDim2.fromScale(0, 1),
+        Size = UDim2.new(1, 0, 0, 12),
+        Parent = Holder,
+    })
+    Corner(Track, UDim.new(1, 0))
+    Stroke(Track)
+
+    local Fill = New("Frame", {
+        BackgroundColor3 = "AccentColor",
+        Size = UDim2.fromScale(0, 1),
+        Parent = Track,
+    })
+    Corner(Fill, UDim.new(1, 0))
+    Sheen(Fill)
+
+    ProgressBar.TextLabel = Label
+
+    local function Round(Value)
+        local Mult = 10 ^ ProgressBar.Rounding
+        return math.floor(Value * Mult + 0.5) / Mult
+    end
+
+    function ProgressBar:Display(Instant)
+        local Alpha = ProgressBar.Max > 0 and math.clamp(ProgressBar.Value / ProgressBar.Max, 0, 1) or 0
+        if ProgressBar.Percent then
+            ValueLabel.Text = string.format("%d%%", math.floor(Alpha * 100 + 0.5))
+        else
+            local Format = "%." .. ProgressBar.Rounding .. "f"
+            ValueLabel.Text = string.format(Format, ProgressBar.Value)
+                .. " / "
+                .. string.format(Format, ProgressBar.Max)
+                .. ProgressBar.Suffix
+        end
+
+        if Instant then
+            Fill.Size = UDim2.fromScale(Alpha, 1)
+        else
+            Tween(Fill, Library.TweenInfo, { Size = UDim2.fromScale(Alpha, 1) })
+        end
+    end
+
+    function ProgressBar:SetValue(Value)
+        ProgressBar.Value = math.clamp(Round(tonumber(Value) or 0), 0, ProgressBar.Max)
+        ProgressBar:Display()
+        Library:SafeCallback(ProgressBar.Changed, ProgressBar.Value)
+    end
+
+    function ProgressBar:SetMax(Max)
+        ProgressBar.Max = math.max(Max, 0)
+        ProgressBar.Value = math.min(ProgressBar.Value, ProgressBar.Max)
+        ProgressBar:Display()
+    end
+
+    function ProgressBar:SetText(Text)
+        ProgressBar.Text = Text
+        Label.Text = Text
+    end
+
+    function ProgressBar:OnChanged(Func)
+        ProgressBar.Changed = Func
+    end
+
+    ProgressBar.Value = math.clamp(Round(Info.Default), 0, ProgressBar.Max)
+    ProgressBar:Display(true)
+
+    if Idx then
+        Options[Idx] = ProgressBar
+    end
+    return ProgressBar
+end
+
+function Funcs:AddStatCards(Idx, Info)
+    RequireBig(self, "AddStatCards")
+    Info = Library:Validate(Info, Templates.StatCards)
+
+    local StatCards = {
+        Cards = {},
+        Type = "StatCards",
+    }
+
+    local Holder = New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 58),
+        Parent = self.Container,
+    })
+    List(Holder, 8, {
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalFlex = Enum.UIFlexAlignment.Fill,
+    })
+
+    function StatCards:AddCard(Card)
+        local Frame = New("Frame", {
+            BackgroundColor3 = "SecondaryColor",
+            LayoutOrder = #StatCards.Cards + 1,
+            Size = UDim2.fromScale(1, 1),
+            Parent = Holder,
+        })
+        Corner(Frame, 6)
+        Stroke(Frame)
+        Padding(Frame, 9, 9, 10, 10)
+
+        local IconData = Library:GetIcon(Card.Icon)
+        if IconData then
+            local Icon = New("ImageLabel", {
+                AnchorPoint = Vector2.new(1, 0),
+                ImageColor3 = IconData.Custom and "WhiteColor" or "AccentColor",
+                ImageTransparency = 0.2,
+                Position = UDim2.fromScale(1, 0),
+                Size = UDim2.fromOffset(16, 16),
+                Parent = Frame,
+            })
+            ApplyIcon(Icon, IconData)
+        end
+
+        New("TextLabel", {
+            Size = UDim2.new(1, IconData and -20 or 0, 0, 14),
+            Text = Card.Title or "",
+            TextSize = 11,
+            TextTransparency = 0.5,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Frame,
+        })
+
+        local ValueLabel = New("TextLabel", {
+            AnchorPoint = Vector2.new(0, 1),
+            FontFace = Bold,
+            Position = UDim2.fromScale(0, 1),
+            Size = UDim2.new(1, 0, 0, 20),
+            Text = tostring(Card.Value or ""),
+            TextSize = 17,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Frame,
+        })
+
+        local Entry = { Title = Card.Title, Value = Card.Value, Label = ValueLabel, Frame = Frame }
+        table.insert(StatCards.Cards, Entry)
+        return Entry
+    end
+
+    function StatCards:SetValue(Title, Value)
+        for _, Entry in StatCards.Cards do
+            if Entry.Title == Title then
+                Entry.Value = Value
+                Entry.Label.Text = tostring(Value)
+                return true
+            end
+        end
+        return false
+    end
+
+    function StatCards:GetValue(Title)
+        for _, Entry in StatCards.Cards do
+            if Entry.Title == Title then
+                return Entry.Value
+            end
+        end
+        return nil
+    end
+
+    for _, Card in Info.Cards do
+        StatCards:AddCard(Card)
+    end
+
+    if Idx then
+        Options[Idx] = StatCards
+    end
+    return StatCards
+end
+
+function Funcs:AddLog(Idx, Info)
+    RequireBig(self, "AddLog")
+    Info = Library:Validate(Info, Templates.Log)
+
+    local Log = {
+        Lines = {},
+        MaxLines = Info.MaxLines,
+        Timestamps = Info.Timestamps,
+        Type = "Log",
+    }
+
+    local Holder = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = self.Container,
+    })
+    List(Holder, 5)
+
+    if Info.Text then
+        New("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 16),
+            Text = Info.Text,
+            TextTransparency = 0.4,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Holder,
+        })
+    end
+
+    local Console = RegisterScroll(New("ScrollingFrame", {
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = "SecondaryColor",
+        BackgroundTransparency = 0,
+        CanvasSize = UDim2.fromScale(0, 0),
+        LayoutOrder = 1,
+        ScrollBarImageColor3 = "AccentColor",
+        ScrollBarImageTransparency = 0.4,
+        ScrollBarThickness = 2,
+        Size = UDim2.new(1, 0, 0, Info.Height),
+        Parent = Holder,
+    }))
+    Corner(Console, 6)
+    Stroke(Console)
+    Padding(Console, 8, 8, 10, 10)
+    List(Console, 2)
+
+    local LineCount = 0
+
+    local function ScrollToBottom()
+        task.defer(function()
+            Console.CanvasPosition = Vector2.new(0, math.max(0, Console.AbsoluteCanvasSize.Y - Console.AbsoluteWindowSize.Y))
+        end)
+    end
+
+    function Log:Log(Text, Color)
+        LineCount += 1
+        local Stamp = ""
+        if Log.Timestamps then
+            Stamp = '<font transparency="0.5">[' .. os.date("%H:%M:%S") .. "]</font> "
+        end
+
+        local Line = New("TextLabel", {
+            AutomaticSize = Enum.AutomaticSize.Y,
+            FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json"),
+            LayoutOrder = LineCount,
+            Size = UDim2.fromScale(1, 0),
+            Text = Stamp .. tostring(Text),
+            TextColor3 = Color or "FontColor",
+            TextSize = 12,
+            TextTransparency = Color and 0 or 0.15,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Console,
+        })
+        table.insert(Log.Lines, Line)
+
+        while #Log.Lines > Log.MaxLines do
+            table.remove(Log.Lines, 1):Destroy()
+        end
+
+        ScrollToBottom()
+        return Line
+    end
+    Log.Print = Log.Log
+
+    function Log:Clear()
+        for _, Line in Log.Lines do
+            Line:Destroy()
+        end
+        table.clear(Log.Lines)
+    end
+
+    if Idx then
+        Options[Idx] = Log
+    end
+    return Log
+end
+
+--// Groupboxes \\--
+local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
+    local Box = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = "MainColor",
+        LayoutOrder = LayoutOrder or 0,
+        Size = UDim2.fromScale(1, 0),
+        Parent = Parent,
+    })
+    Corner(Box, Library.CornerRadius)
+    Stroke(Box)
+    List(Box, 0)
+
+    local Header = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+        Parent = Box,
+    })
+    Padding(Header, 9, 9, 12, 12)
+
+    local BoxIcon = Library:GetIcon(Info.IconName or Info.Icon)
+    if BoxIcon then
+        local HeaderIcon = New("ImageLabel", {
+            ImageColor3 = BoxIcon.Custom and "WhiteColor" or "AccentColor",
+            Size = UDim2.fromOffset(18, 18),
+            Parent = Header,
+        })
+        ApplyIcon(HeaderIcon, BoxIcon)
+    end
+
+    local Texts = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(BoxIcon and 26 or 0, 0),
+        Size = UDim2.new(1, BoxIcon and -26 or 0, 0, 0),
+        Parent = Header,
+    })
+    List(Texts, 2)
+
+    New("TextLabel", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        FontFace = SemiBold,
+        Size = UDim2.new(1, 0, 0, 18),
+        Text = Info.Name or "Groupbox",
+        TextSize = 14,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Texts,
+    })
+
+    if Info.Description then
+        New("TextLabel", {
+            AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = 1,
+            Size = UDim2.fromScale(1, 0),
+            Text = Info.Description,
+            TextSize = 12,
+            TextTransparency = 0.5,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Texts,
+        })
+    end
+
+    MakeLine({ LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 1), Parent = Box })
+
+    local BoxContainer = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        LayoutOrder = 2,
+        Size = UDim2.fromScale(1, 0),
+        Parent = Box,
+    })
+    List(BoxContainer, 9)
+    Padding(BoxContainer, 10, 12, 12, 12)
+
+    local Groupbox = {
+        Name = Info.Name,
+        Holder = Box,
+        Container = BoxContainer,
+        Tab = Tab,
+        IsBig = IsBig == true,
+        Type = "Groupbox",
+    }
+
+    function Groupbox:SetVisible(Visible)
+        Box.Visible = Visible
+    end
+
+    setmetatable(Groupbox, { __index = Funcs })
+    return Groupbox
+end
+
+--// Config system \\--
+local function HasFileSystem()
+    return typeof(writefile) == "function"
+        and typeof(readfile) == "function"
+        and typeof(isfile) == "function"
+        and typeof(isfolder) == "function"
+        and typeof(makefolder) == "function"
+        and typeof(listfiles) == "function"
+end
+Library.HasFileSystem = HasFileSystem
+
+local function SanitizeName(Name)
+    Name = tostring(Name or "")
+    Name = Name:gsub("[^%w%s%-_%.]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    return Name
+end
+
+local function EnsureFolders()
+    local Path = ""
+    for _, Part in string.split(Library.ConfigFolder, "/") do
+        Path = Path == "" and Part or (Path .. "/" .. Part)
+        if not isfolder(Path) then
+            makefolder(Path)
+        end
+    end
+    local Configs = Library.ConfigFolder .. "/configs"
+    if not isfolder(Configs) then
+        makefolder(Configs)
+    end
+end
+
+local function ConfigPath(Name)
+    return Library.ConfigFolder .. "/configs/" .. Name .. ".json"
+end
+
+local function AutoloadPath()
+    return Library.ConfigFolder .. "/autoload.txt"
+end
+
+function Library:SetIgnoreIndexes(Indexes)
+    for _, Idx in Indexes do
+        Library.IgnoreIndexes[Idx] = true
+    end
+end
+
+function Library:SetConfigFolder(Folder)
+    Library.ConfigFolder = tostring(Folder)
+end
+
+function Library:GetConfigData()
+    local Objects = {}
+
+    for Idx, Toggle in Toggles do
+        if not Library.IgnoreIndexes[Idx] then
+            table.insert(Objects, { type = "Toggle", idx = Idx, value = Toggle.Value })
+        end
+    end
+
+    for Idx, Option in Options do
+        if Library.IgnoreIndexes[Idx] then
+            continue
+        end
+
+        if Option.Type == "Slider" then
+            table.insert(Objects, { type = "Slider", idx = Idx, value = Option.Value })
+        elseif Option.Type == "Dropdown" then
+            local Value = Option.Value
+            if Option.Multi then
+                Value = Option:GetActiveValues()
+            end
+            table.insert(Objects, { type = "Dropdown", idx = Idx, value = Value, multi = Option.Multi })
+        elseif Option.Type == "ColorPicker" then
+            table.insert(Objects, {
+                type = "ColorPicker",
+                idx = Idx,
+                value = Option.Value:ToHex(),
+                transparency = Option.Transparency,
+            })
+        elseif Option.Type == "KeyPicker" then
+            table.insert(Objects, { type = "KeyPicker", idx = Idx, key = Option.Value, mode = Option.Mode })
+        elseif Option.Type == "Input" then
+            table.insert(Objects, { type = "Input", idx = Idx, text = Option.Value })
+        end
+    end
+
+    return { version = 1, objects = Objects }
+end
+
+function Library:ApplyConfigEntry(Entry)
+    if typeof(Entry) ~= "table" or Entry.idx == nil then
+        return false
+    end
+
+    local Object = if Entry.type == "Toggle" then Toggles[Entry.idx] else Options[Entry.idx]
+    if not Object or Object.Type ~= Entry.type then
+        return false
+    end
+
+    local Success, Error = pcall(function()
+        if Entry.type == "Toggle" then
+            Object:SetValue(Entry.value == true)
+        elseif Entry.type == "Slider" then
+            Object:SetValue(tonumber(Entry.value))
+        elseif Entry.type == "Dropdown" then
+            Object:SetValue(Entry.value)
+        elseif Entry.type == "ColorPicker" then
+            Object:SetValueRGB(Color3.fromHex(Entry.value), tonumber(Entry.transparency))
+        elseif Entry.type == "KeyPicker" then
+            Object:SetValue({ Entry.key, Entry.mode })
+        elseif Entry.type == "Input" then
+            Object:SetValue(Entry.text)
+        end
+    end)
+
+    if not Success then
+        warn("[Ui3] Failed to load '" .. tostring(Entry.idx) .. "': " .. tostring(Error))
+    end
+    return Success
+end
+
+function Library:SaveConfig(Name)
+    if not HasFileSystem() then
+        return false, "your executor doesn't support saving files"
+    end
+    Name = SanitizeName(Name)
+    if Name == "" then
+        return false, "invalid config name"
+    end
+
+    local Success, Encoded = pcall(function()
+        return HttpService:JSONEncode(Library:GetConfigData())
+    end)
+    if not Success then
+        return false, "failed to encode config"
+    end
+
+    local Wrote, Error = pcall(function()
+        EnsureFolders()
+        writefile(ConfigPath(Name), Encoded)
+    end)
+    if not Wrote then
+        return false, tostring(Error)
+    end
+    return true
+end
+
+-- KeepPending: values for elements that don't exist yet are applied the moment they're created.
+function Library:LoadConfig(Name, KeepPending)
+    if not HasFileSystem() then
+        return false, "your executor doesn't support files"
+    end
+    Name = SanitizeName(Name)
+    local Path = ConfigPath(Name)
+    if Name == "" or not isfile(Path) then
+        return false, "config does not exist"
+    end
+
+    local Success, Decoded = pcall(function()
+        return HttpService:JSONDecode(readfile(Path))
+    end)
+    if not Success or typeof(Decoded) ~= "table" or typeof(Decoded.objects) ~= "table" then
+        return false, "config is corrupted"
+    end
+
+    for _, Entry in Decoded.objects do
+        if typeof(Entry) ~= "table" or Entry.idx == nil then
+            continue
+        end
+        local Exists = if Entry.type == "Toggle" then Toggles[Entry.idx] else Options[Entry.idx]
+        if Exists then
+            Library:ApplyConfigEntry(Entry)
+        elseif KeepPending then
+            Library.PendingConfig[Entry.idx] = Entry
+        end
+    end
+
+    return true
+end
+
+function Library:DeleteConfig(Name)
+    if not HasFileSystem() or typeof(delfile) ~= "function" then
+        return false, "your executor doesn't support deleting files"
+    end
+    Name = SanitizeName(Name)
+    local Path = ConfigPath(Name)
+    if Name == "" or not isfile(Path) then
+        return false, "config does not exist"
+    end
+
+    local Success, Error = pcall(delfile, Path)
+    if not Success then
+        return false, tostring(Error)
+    end
+    if Library:GetAutoloadConfig() == Name then
+        Library:ClearAutoloadConfig()
+    end
+    return true
+end
+
+function Library:GetConfigs()
+    if not HasFileSystem() then
+        return {}
+    end
+    local Names = {}
+    pcall(function()
+        EnsureFolders()
+        for _, File in listfiles(Library.ConfigFolder .. "/configs") do
+            local Name = tostring(File):match("([^/\\]+)%.json$")
+            if Name then
+                table.insert(Names, Name)
+            end
+        end
+    end)
+    table.sort(Names, function(A, B)
+        return A:lower() < B:lower()
+    end)
+    return Names
+end
+
+function Library:SetAutoloadConfig(Name)
+    if not HasFileSystem() then
+        return false, "your executor doesn't support files"
+    end
+    Name = SanitizeName(Name)
+    if Name == "" or not isfile(ConfigPath(Name)) then
+        return false, "config does not exist"
+    end
+    local Success, Error = pcall(function()
+        EnsureFolders()
+        writefile(AutoloadPath(), Name)
+    end)
+    if not Success then
+        return false, tostring(Error)
+    end
+    return true
+end
+
+function Library:GetAutoloadConfig()
+    if not HasFileSystem() then
+        return nil
+    end
+    local Success, Name = pcall(function()
+        if isfile(AutoloadPath()) then
+            return SanitizeName(readfile(AutoloadPath()))
+        end
+        return nil
+    end)
+    if Success and Name and Name ~= "" then
+        return Name
+    end
+    return nil
+end
+
+function Library:ClearAutoloadConfig()
+    if not HasFileSystem() then
+        return false
+    end
+    pcall(function()
+        if typeof(delfile) == "function" and isfile(AutoloadPath()) then
+            delfile(AutoloadPath())
+        else
+            writefile(AutoloadPath(), "")
+        end
+    end)
+    return true
+end
+
+function Library:LoadAutoloadConfig()
+    local Name = Library:GetAutoloadConfig()
+    if not Name then
+        return false, "no autoload config"
+    end
+    local Success, Error = Library:LoadConfig(Name, true)
+    if Success then
+        Library.LoadedAutoload = Name
+    end
+    return Success, Error
 end
 
 --// Window \\--
@@ -2462,7 +3862,7 @@ function Library:Toggle(Value)
         Tween(Window.Scale, Library.TweenInfo, { Scale = 1 })
     else
         CloseOpenedPopup()
-        TooltipLabel.Visible = false
+        HideTooltip()
         local T = Tween(Window.Scale, TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.In), { Scale = 0.96 })
         T.Completed:Connect(function()
             if not Library.Toggled then
@@ -2494,6 +3894,8 @@ function Library:Unload()
     table.clear(Options)
     table.clear(Library.Registry)
     table.clear(Library.Updaters)
+    table.clear(Library.ScrollFrames)
+    table.clear(Library.PendingConfig)
     ScreenGui:Destroy()
 end
 
@@ -2509,6 +3911,15 @@ function Library:CreateWindow(WindowInfo)
     Library.ToggleKeybind = WindowInfo.ToggleKeybind
     if WindowInfo.Font then
         Library:SetFont(WindowInfo.Font)
+    end
+
+    -- Each script gets its own config folder (override with ConfigFolder).
+    Library.ConfigFolder = WindowInfo.ConfigFolder
+        or ("Ui3/" .. (SanitizeName(WindowInfo.Title) ~= "" and SanitizeName(WindowInfo.Title) or "Default"))
+
+    -- Read the autoload config now: every element created from here on picks up its saved value.
+    if WindowInfo.AutoLoad ~= false then
+        Library:LoadAutoloadConfig()
     end
 
     local SidebarWidth = WindowInfo.SidebarWidth
@@ -2572,19 +3983,13 @@ function Library:CreateWindow(WindowInfo)
         Parent = Main,
     })
 
-    local function Line(Props)
-        Props.BackgroundColor3 = "OutlineColor"
-        Props.Parent = Props.Parent or Main
-        return New("Frame", Props)
-    end
-
     --// Top bar \\--
     local TopBar = New("Frame", {
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 48),
         Parent = Main,
     })
-    Line({ Position = UDim2.fromOffset(0, 48), Size = UDim2.new(1, 0, 0, 1) })
+    MakeLine({ Position = UDim2.fromOffset(0, 48), Size = UDim2.new(1, 0, 0, 1), Parent = Main })
 
     local TitleHolder = New("Frame", {
         BackgroundTransparency = 1,
@@ -2609,9 +4014,7 @@ function Library:CreateWindow(WindowInfo)
 
     local TitleLabel = New("TextLabel", {
         AutomaticSize = Enum.AutomaticSize.X,
-        FontFace = function()
-            return Font.new(Library.Scheme.Font.Family, Enum.FontWeight.Bold)
-        end,
+        FontFace = Bold,
         LayoutOrder = 1,
         Size = UDim2.fromOffset(0, 20),
         Text = WindowInfo.Title,
@@ -2623,16 +4026,14 @@ function Library:CreateWindow(WindowInfo)
     local TabInfo = New("Frame", {
         BackgroundTransparency = 1,
         Position = UDim2.fromOffset(SidebarWidth + 1, 0),
-        Size = UDim2.new(1, -SidebarWidth - 1 - 16, 1, 0),
+        Size = UDim2.new(1, -SidebarWidth - 1 - 56, 1, 0),
         Parent = TopBar,
     })
     Padding(TabInfo, 0, 0, 14, 0)
     List(TabInfo, 2, { VerticalAlignment = Enum.VerticalAlignment.Center })
 
     local TabInfoTitle = New("TextLabel", {
-        FontFace = function()
-            return Font.new(Library.Scheme.Font.Family, Enum.FontWeight.SemiBold)
-        end,
+        FontFace = SemiBold,
         Size = UDim2.new(1, 0, 0, 16),
         Text = "",
         TextSize = 14,
@@ -2652,15 +4053,15 @@ function Library:CreateWindow(WindowInfo)
     })
 
     --// Sidebar + divider \\--
-    Line({ Position = UDim2.fromOffset(SidebarWidth, 49), Size = UDim2.new(0, 1, 1, -70) })
+    MakeLine({ Position = UDim2.fromOffset(SidebarWidth, 49), Size = UDim2.new(0, 1, 1, -70), Parent = Main })
 
-    local Sidebar = New("ScrollingFrame", {
+    local Sidebar = RegisterScroll(New("ScrollingFrame", {
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.fromScale(0, 0),
         Position = UDim2.fromOffset(0, 49),
         Size = UDim2.new(0, SidebarWidth, 1, -70),
         Parent = Main,
-    })
+    }))
     List(Sidebar, 4)
     Padding(Sidebar, 8, 8, 10, 10)
 
@@ -2674,7 +4075,12 @@ function Library:CreateWindow(WindowInfo)
     })
 
     --// Bottom bar \\--
-    Line({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -20), Size = UDim2.new(1, 0, 0, 1) })
+    MakeLine({
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new(0, 0, 1, -20),
+        Size = UDim2.new(1, 0, 0, 1),
+        Parent = Main,
+    })
 
     local BottomBar = New("Frame", {
         AnchorPoint = Vector2.new(0, 1),
@@ -2765,6 +4171,11 @@ function Library:CreateWindow(WindowInfo)
         FooterLabel.Text = Text
     end
 
+    -- Width available to a tab page's content (container minus its 10px padding on both sides).
+    local function ContentWidth()
+        return Root.Size.X.Offset - SidebarWidth - 1 - 20
+    end
+
     --// Tabs \\--
     function Window:AddTab(...)
         local Name, Icon, Description
@@ -2829,46 +4240,69 @@ function Library:CreateWindow(WindowInfo)
             Parent = TabButton,
         })
 
-        --// Tab page: two scrolling columns, like Obsidian \\--
-        local Page = New("Frame", {
-            BackgroundTransparency = 1,
+        --// Tab page \\--
+        -- One scrolling page made of sections: rows of left/right columns, with big
+        -- groupboxes spanning the full width between them, in the order they're added.
+        local Page = RegisterScroll(New("ScrollingFrame", {
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            CanvasSize = UDim2.fromScale(0, 0),
+            ScrollBarImageColor3 = "AccentColor",
+            ScrollBarImageTransparency = 0.4,
+            ScrollBarThickness = 2,
             Size = UDim2.fromScale(1, 1),
             Visible = false,
             Parent = Container,
-        })
+        }))
+        Padding(Page, 10, 10, 10, 10)
+        List(Page, 10)
 
-        local function MakeSide(IsLeft)
-            local Side = New("ScrollingFrame", {
-                AutomaticCanvasSize = Enum.AutomaticSize.Y,
-                CanvasSize = UDim2.fromScale(0, 0),
-                ScrollBarImageColor3 = "AccentColor",
-                ScrollBarImageTransparency = 0.4,
-                ScrollBarThickness = 2,
-                Size = UDim2.fromScale(0.5, 1),
-                Parent = Page,
-            })
-            List(Side, 10)
-            Padding(Side, 10, 10, IsLeft and 10 or 5, IsLeft and 5 or 10)
-            return Side
-        end
-
-        local Left = MakeSide(true)
-        local Right = MakeSide(false)
+        local SectionCount = 0
+        local ColumnSections = {}
+        local CurrentColumns = nil
 
         -- Whole-pixel column widths; a 50% split of an odd width puts the right column on a half pixel.
-        local function LayoutSides()
-            local Total = Root.Size.X.Offset - SidebarWidth - 1
-            local Half = math.floor(Total / 2)
-            Left.Size = UDim2.new(0, Half, 1, 0)
-            Right.Position = UDim2.fromOffset(Half, 0)
-            Right.Size = UDim2.new(0, Total - Half, 1, 0)
+        local function LayoutColumns(Section)
+            local Total = ContentWidth()
+            local Half = math.floor((Total - 10) / 2)
+            Section.Left.Size = UDim2.new(0, Half, 0, 0)
+            Section.Right.Position = UDim2.fromOffset(Half + 10, 0)
+            Section.Right.Size = UDim2.new(0, Total - Half - 10, 0, 0)
         end
-        LayoutSides()
-        Library:GiveSignal(Root:GetPropertyChangedSignal("Size"):Connect(LayoutSides))
+
+        local function NewColumns()
+            SectionCount += 1
+            local Frame = New("Frame", {
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1,
+                LayoutOrder = SectionCount,
+                Size = UDim2.fromScale(1, 0),
+                Parent = Page,
+            })
+
+            local function Column()
+                local Col = New("Frame", {
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundTransparency = 1,
+                    Parent = Frame,
+                })
+                List(Col, 10)
+                return Col
+            end
+
+            local Section = { Frame = Frame, Left = Column(), Right = Column() }
+            LayoutColumns(Section)
+            table.insert(ColumnSections, Section)
+            return Section
+        end
+
+        Library:GiveSignal(Root:GetPropertyChangedSignal("Size"):Connect(function()
+            for _, Section in ColumnSections do
+                LayoutColumns(Section)
+            end
+        end))
 
         Tab.Button = TabButton
         Tab.Container = Page
-        Tab.Sides = { Left, Right }
 
         function Tab:SetSelected(Selected)
             local TweenData = Library.TweenInfo
@@ -2911,18 +4345,19 @@ function Library:CreateWindow(WindowInfo)
             Tween(Page, Library.TweenInfo, { Position = UDim2.fromOffset(0, 0) })
         end
 
-        TabButton.MouseEnter:Connect(function()
+        OnHover(TabButton, function()
             if Library.ActiveTab ~= Tab then
                 Tween(TabLabel, Library.FastTweenInfo, { TextTransparency = 0.25 })
             end
-        end)
-        TabButton.MouseLeave:Connect(function()
+        end, function()
             if Library.ActiveTab ~= Tab then
                 Tween(TabLabel, Library.FastTweenInfo, { TextTransparency = 0.5 })
             end
         end)
         TabButton.MouseButton1Click:Connect(function()
-            Tab:Show()
+            if Library:CanInteract() then
+                Tab:Show()
+            end
         end)
 
         --// Groupboxes \\--
@@ -2934,92 +4369,12 @@ function Library:CreateWindow(WindowInfo)
                 SideIndex = SideIndex:lower() == "right" and 2 or 1
             end
 
-            local Box = New("Frame", {
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundColor3 = "MainColor",
-                LayoutOrder = #Tab.Groupboxes,
-                Size = UDim2.fromScale(1, 0),
-                Parent = Tab.Sides[SideIndex] or Left,
-            })
-            Corner(Box, Library.CornerRadius)
-            Stroke(Box)
-            List(Box, 0)
-
-            local Header = New("Frame", {
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundTransparency = 1,
-                Size = UDim2.new(1, 0, 0, 36),
-                Parent = Box,
-            })
-            Padding(Header, 9, 9, 12, 12)
-
-            local BoxIcon = Library:GetIcon(Info.IconName)
-            if BoxIcon then
-                local HeaderIcon = New("ImageLabel", {
-                    ImageColor3 = BoxIcon.Custom and "WhiteColor" or "AccentColor",
-                    Size = UDim2.fromOffset(18, 18),
-                    Parent = Header,
-                })
-                ApplyIcon(HeaderIcon, BoxIcon)
+            if not CurrentColumns then
+                CurrentColumns = NewColumns()
             end
+            local Column = SideIndex == 2 and CurrentColumns.Right or CurrentColumns.Left
 
-            local Texts = New("Frame", {
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundTransparency = 1,
-                Position = UDim2.fromOffset(BoxIcon and 26 or 0, 0),
-                Size = UDim2.new(1, BoxIcon and -26 or 0, 0, 0),
-                Parent = Header,
-            })
-            List(Texts, 2)
-
-            New("TextLabel", {
-                AutomaticSize = Enum.AutomaticSize.Y,
-                FontFace = function()
-                    return Font.new(Library.Scheme.Font.Family, Enum.FontWeight.SemiBold)
-                end,
-                Size = UDim2.new(1, 0, 0, 18),
-                Text = Info.Name,
-                TextSize = 14,
-                TextWrapped = true,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = Texts,
-            })
-
-            if Info.Description then
-                New("TextLabel", {
-                    AutomaticSize = Enum.AutomaticSize.Y,
-                    LayoutOrder = 1,
-                    Size = UDim2.fromScale(1, 0),
-                    Text = Info.Description,
-                    TextSize = 12,
-                    TextTransparency = 0.5,
-                    TextWrapped = true,
-                    TextXAlignment = Enum.TextXAlignment.Left,
-                    Parent = Texts,
-                })
-            end
-
-            Line({ LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 1), Parent = Box })
-
-            local BoxContainer = New("Frame", {
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundTransparency = 1,
-                LayoutOrder = 2,
-                Size = UDim2.fromScale(1, 0),
-                Parent = Box,
-            })
-            List(BoxContainer, 9)
-            Padding(BoxContainer, 10, 12, 12, 12)
-
-            local Groupbox = {
-                Name = Info.Name,
-                Holder = Box,
-                Container = BoxContainer,
-                Tab = Tab,
-                Type = "Groupbox",
-            }
-            setmetatable(Groupbox, { __index = Funcs })
-
+            local Groupbox = CreateGroupbox(Column, Info, #Tab.Groupboxes, Tab, false)
             table.insert(Tab.Groupboxes, Groupbox)
             return Groupbox
         end
@@ -3032,6 +4387,21 @@ function Library:CreateWindow(WindowInfo)
             return Tab:AddGroupbox({ Side = "Right", Name = Name, IconName = IconName })
         end
 
+        -- Full width groupbox. Groupboxes added after it start a new row of columns below it.
+        function Tab:AddBigGroupbox(Info, IconName)
+            if typeof(Info) ~= "table" then
+                Info = { Name = Info, IconName = IconName }
+            end
+            Info = Library:Validate(Info, Templates.Groupbox)
+
+            SectionCount += 1
+            CurrentColumns = nil
+
+            local Groupbox = CreateGroupbox(Page, Info, SectionCount, Tab, true)
+            table.insert(Tab.Groupboxes, Groupbox)
+            return Groupbox
+        end
+
         table.insert(Window.Tabs, Tab)
         Library.Tabs[Name] = Tab
 
@@ -3041,6 +4411,372 @@ function Library:CreateWindow(WindowInfo)
 
         return Tab
     end
+
+    --// Settings panel (gear, top right) \\--
+    local PanelWidth = 280
+    local SettingsOpen = false
+
+    local SettingsButton = New("ImageButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundColor3 = "SecondaryColor",
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(30, 30),
+        Visible = WindowInfo.ShowSettings,
+        ZIndex = 3,
+        Parent = TopBar,
+    })
+    Corner(SettingsButton, 8)
+    local SettingsStroke = Stroke(SettingsButton, "OutlineColor", 1)
+
+    local GearIcon = Library:GetIcon("settings")
+    local Gear
+    if GearIcon then
+        Gear = New("ImageLabel", {
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.4,
+            Position = UDim2.fromOffset(6, 6),
+            Size = UDim2.fromOffset(18, 18),
+            ZIndex = 3,
+            Parent = SettingsButton,
+        })
+        ApplyIcon(Gear, GearIcon)
+    else
+        Gear = New("TextLabel", {
+            Size = UDim2.fromScale(1, 1),
+            Text = "⚙",
+            TextSize = 16,
+            TextTransparency = 0.4,
+            ZIndex = 3,
+            Parent = SettingsButton,
+        })
+    end
+
+    local Overlay = New("TextButton", {
+        BackgroundColor3 = "DarkColor",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, 49),
+        Size = UDim2.new(1, 0, 1, -70),
+        Visible = false,
+        ZIndex = 8,
+        Parent = Main,
+    })
+
+    local Panel = New("Frame", {
+        BackgroundColor3 = "BackgroundColor",
+        Position = UDim2.new(1, 0, 0, 49),
+        Size = UDim2.new(0, PanelWidth, 1, -70),
+        Visible = false,
+        ZIndex = 9,
+        Parent = Main,
+    })
+    MakeLine({ Size = UDim2.new(0, 1, 1, 0), ZIndex = 9, Parent = Panel })
+
+    local PanelHeader = New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 42),
+        ZIndex = 9,
+        Parent = Panel,
+    })
+    Padding(PanelHeader, 0, 0, 14, 10)
+    New("TextLabel", {
+        FontFace = SemiBold,
+        Size = UDim2.new(1, -30, 1, 0),
+        Text = "Settings",
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 9,
+        Parent = PanelHeader,
+    })
+
+    local CloseButton = New("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, 0, 0.5, 0),
+        Size = UDim2.fromOffset(24, 24),
+        Text = "",
+        ZIndex = 9,
+        Parent = PanelHeader,
+    })
+    local CloseIcon = Library:GetIcon("x")
+    if CloseIcon then
+        local CloseImage = New("ImageLabel", {
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.4,
+            Position = UDim2.fromOffset(3, 3),
+            Size = UDim2.fromOffset(18, 18),
+            ZIndex = 9,
+            Parent = CloseButton,
+        })
+        ApplyIcon(CloseImage, CloseIcon)
+    else
+        CloseButton.Text = "X"
+    end
+
+    MakeLine({ Position = UDim2.fromOffset(0, 42), Size = UDim2.new(1, 0, 0, 1), ZIndex = 9, Parent = Panel })
+
+    local PanelScroll = RegisterScroll(New("ScrollingFrame", {
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.fromScale(0, 0),
+        Position = UDim2.fromOffset(1, 43),
+        ScrollBarImageColor3 = "AccentColor",
+        ScrollBarImageTransparency = 0.4,
+        ScrollBarThickness = 2,
+        Size = UDim2.new(1, -1, 1, -43),
+        ZIndex = 9,
+        Parent = Panel,
+    }))
+    Padding(PanelScroll, 10, 10, 10, 10)
+    List(PanelScroll, 10)
+
+    function Window:SetSettingsOpen(Open)
+        if Open == SettingsOpen then
+            return
+        end
+        SettingsOpen = Open
+        CloseOpenedPopup()
+
+        if Open then
+            Panel.Visible = true
+            Overlay.Visible = true
+        end
+
+        Tween(Panel, Library.TweenInfo, {
+            Position = UDim2.new(1, Open and -PanelWidth or 0, 0, 49),
+        })
+        Tween(Gear, Library.TweenInfo, { Rotation = Open and 90 or 0 })
+        Tween(SettingsButton, Library.FastTweenInfo, { BackgroundTransparency = Open and 0 or 1 })
+        Tween(SettingsStroke, Library.FastTweenInfo, { Transparency = Open and 0 or 1 })
+        local Fade = Tween(Overlay, Library.FastTweenInfo, { BackgroundTransparency = Open and 0.45 or 1 })
+
+        if not Open then
+            Fade.Completed:Connect(function()
+                if not SettingsOpen then
+                    Panel.Visible = false
+                    Overlay.Visible = false
+                end
+            end)
+        end
+    end
+
+    function Window:OpenSettings()
+        Window:SetSettingsOpen(true)
+    end
+
+    function Window:CloseSettings()
+        Window:SetSettingsOpen(false)
+    end
+
+    SettingsButton.MouseButton1Click:Connect(function()
+        if Library:CanInteract() then
+            Window:SetSettingsOpen(not SettingsOpen)
+        end
+    end)
+    CloseButton.MouseButton1Click:Connect(function()
+        Window:SetSettingsOpen(false)
+    end)
+    Overlay.MouseButton1Click:Connect(function()
+        if Library:CanInteract() then
+            Window:SetSettingsOpen(false)
+        end
+    end)
+    OnHover(SettingsButton, function()
+        if not SettingsOpen then
+            Tween(Gear, Library.FastTweenInfo, Gear:IsA("ImageLabel") and { ImageTransparency = 0 } or { TextTransparency = 0 })
+        end
+    end, function()
+        Tween(Gear, Library.FastTweenInfo, Gear:IsA("ImageLabel") and { ImageTransparency = 0.4 } or { TextTransparency = 0.4 })
+    end)
+
+    -- Settings sections are ordinary groupboxes, so they use the exact same elements.
+    local SettingsSections = 0
+    function Window:AddSettingsGroupbox(Info, IconName)
+        if typeof(Info) ~= "table" then
+            Info = { Name = Info, IconName = IconName }
+        end
+        SettingsSections += 1
+        return CreateGroupbox(PanelScroll, Info, SettingsSections, nil, false)
+    end
+
+    local MenuBox = Window:AddSettingsGroupbox("Menu", "sliders-horizontal")
+
+    MenuBox:AddLabel("Menu keybind"):AddKeyPicker("Ui3_MenuKeybind", {
+        Default = Library.ToggleKeybind and Library.ToggleKeybind.Name or "RightControl",
+        Text = "Menu keybind",
+        NoMode = true,
+        ChangedCallback = function(Key)
+            local Success, KeyCode = pcall(function()
+                return Enum.KeyCode[Key]
+            end)
+            if Success and KeyCode and Key ~= "None" then
+                Library.ToggleKeybind = KeyCode
+            else
+                -- Never leave the menu without a keyboard key to open it.
+                local Previous = Library.ToggleKeybind and Library.ToggleKeybind.Name or "RightControl"
+                task.defer(function()
+                    if Options.Ui3_MenuKeybind then
+                        Options.Ui3_MenuKeybind:SetValue({ Previous })
+                    end
+                end)
+                Library:Notify({ Title = "Invalid menu keybind", Description = "Pick a keyboard key.", Time = 3 })
+            end
+        end,
+    })
+
+    MenuBox:AddLabel("Accent color"):AddColorPicker("Ui3_Accent", {
+        Default = Library.Scheme.AccentColor,
+        Title = "Accent color",
+        Callback = function(Color)
+            Library:SetAccent(Color)
+        end,
+    })
+
+    local ConfigBox = Window:AddSettingsGroupbox("Configs", "folder")
+    Library:SetIgnoreIndexes({ "Ui3_ConfigName", "Ui3_ConfigList" })
+
+    if not HasFileSystem() then
+        ConfigBox:AddLabel("Your executor doesn't support files, so configs can't be saved.", true)
+    else
+        local AutoloadLabel
+
+        local function RefreshAutoloadLabel()
+            AutoloadLabel:SetText("Autoload: " .. (Library:GetAutoloadConfig() or "none"))
+        end
+
+        local NameInput = ConfigBox:AddInput("Ui3_ConfigName", {
+            Text = "Config name",
+            Placeholder = "my config",
+        })
+
+        local ConfigList
+
+        local function RefreshList(Select)
+            ConfigList:SetValues(Library:GetConfigs())
+            if Select then
+                ConfigList:SetValue(Select)
+            end
+        end
+
+        local function Report(Success, Error, Message)
+            if Success then
+                Library:Notify({ Title = Message, Time = 3 })
+            else
+                Library:Notify({ Title = "Config error", Description = tostring(Error), Time = 4 })
+            end
+        end
+
+        ConfigBox:AddButton({
+            Text = "Create config",
+            Func = function()
+                local Name = SanitizeName(NameInput.Value)
+                if Name == "" then
+                    Report(false, "Type a config name first.")
+                    return
+                end
+                if table.find(Library:GetConfigs(), Name) then
+                    Report(false, "'" .. Name .. "' already exists. Select it and press Overwrite.")
+                    return
+                end
+                local Success, Error = Library:SaveConfig(Name)
+                Report(Success, Error, "Created config '" .. Name .. "'")
+                if Success then
+                    NameInput:SetValue("")
+                    RefreshList(Name)
+                end
+            end,
+        })
+
+        ConfigList = ConfigBox:AddDropdown("Ui3_ConfigList", {
+            Text = "Configs",
+            Values = Library:GetConfigs(),
+            AllowNull = true,
+        })
+
+        local function Selected()
+            local Name = ConfigList.Value
+            if not Name then
+                Report(false, "Select a config first.")
+            end
+            return Name
+        end
+
+        ConfigBox:AddButton({
+            Text = "Load",
+            Func = function()
+                local Name = Selected()
+                if Name then
+                    local Success, Error = Library:LoadConfig(Name)
+                    Report(Success, Error, "Loaded config '" .. Name .. "'")
+                end
+            end,
+        }):AddButton({
+            Text = "Overwrite",
+            DoubleClick = true,
+            Func = function()
+                local Name = Selected()
+                if Name then
+                    local Success, Error = Library:SaveConfig(Name)
+                    Report(Success, Error, "Overwrote config '" .. Name .. "'")
+                end
+            end,
+        })
+
+        ConfigBox:AddButton({
+            Text = "Delete",
+            Risky = true,
+            DoubleClick = true,
+            Func = function()
+                local Name = Selected()
+                if Name then
+                    local Success, Error = Library:DeleteConfig(Name)
+                    Report(Success, Error, "Deleted config '" .. Name .. "'")
+                    RefreshList()
+                    RefreshAutoloadLabel()
+                end
+            end,
+        }):AddButton({
+            Text = "Refresh",
+            Func = function()
+                RefreshList()
+            end,
+        })
+
+        ConfigBox:AddButton({
+            Text = "Set autoload",
+            Func = function()
+                local Name = Selected()
+                if Name then
+                    local Success, Error = Library:SetAutoloadConfig(Name)
+                    Report(Success, Error, "'" .. Name .. "' will load automatically")
+                    RefreshAutoloadLabel()
+                end
+            end,
+        }):AddButton({
+            Text = "Reset autoload",
+            Func = function()
+                Library:ClearAutoloadConfig()
+                Report(true, nil, "Autoload cleared")
+                RefreshAutoloadLabel()
+            end,
+        })
+
+        AutoloadLabel = ConfigBox:AddLabel("Autoload: none", true)
+        RefreshAutoloadLabel()
+
+        if Library.LoadedAutoload then
+            ConfigList:SetValue(Library.LoadedAutoload)
+        end
+    end
+
+    local DangerBox = Window:AddSettingsGroupbox("Script", "power")
+    DangerBox:AddButton({
+        Text = "Unload",
+        Risky = true,
+        DoubleClick = true,
+        Func = function()
+            Library:Unload()
+        end,
+    })
 
     --// Mobile open/close button \\--
     if Library.IsMobile then
@@ -3060,6 +4796,12 @@ function Library:CreateWindow(WindowInfo)
 
     if WindowInfo.AutoShow then
         task.defer(Library.Toggle, Library, true)
+    end
+
+    if Library.LoadedAutoload then
+        task.defer(function()
+            Library:Notify({ Title = "Loaded autoload config", Description = Library.LoadedAutoload, Time = 3 })
+        end)
     end
 
     return Window
