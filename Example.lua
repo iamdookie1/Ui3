@@ -15,6 +15,7 @@ local Window = Library:CreateWindow({
 	AutoShow = true,
 	Resizable = true,
 	ToggleKeybind = Enum.KeyCode.RightControl,
+	-- DPIScale = 100, -- starting DPI in percent; players can change it in settings (saved in configs)
 })
 
 -- Window:AddTab(Name, Icon, Description)
