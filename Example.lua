@@ -20,10 +20,13 @@ local Window = Library:CreateWindow({
 -- Window:AddTab(Name, Icon, Description)
 -- Icons come from https://lucide.dev/
 local Tabs = {
-	Main = Window:AddTab("Main", "user", "Toggles, buttons and colors"),
+	Main = Window:AddTab("Main", "user", "Toggles, buttons, sliders and dropdowns"),
+	Dashboard = Window:AddTab("Dashboard", "layout-dashboard", "Big groupboxes"),
 	Visuals = Window:AddTab("Visuals", "eye", "Color pickers on labels"),
-	["UI Settings"] = Window:AddTab("UI Settings", "settings", "Menu options"),
 }
+
+-- Menu keybind, accent color, configs (save / load / autoload) and Unload are already
+-- in the settings panel: the gear icon in the top right corner. Nothing to build here.
 
 --// Main tab \\--
 local LeftGroupBox = Tabs.Main:AddGroupbox({
@@ -275,25 +278,138 @@ ColorBox:AddLabel("Outline color"):AddColorPicker("OutlineColor", {
 -- Setting values from code
 Options.OutlineColor:SetValueRGB(Color3.fromRGB(255, 101, 104))
 
---// UI Settings tab \\--
-local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu", "wrench")
-
-MenuGroup:AddLabel("Menu accent"):AddColorPicker("MenuAccent", {
-	Default = Library.Scheme.AccentColor,
-	Title = "Accent color",
-	Callback = function(Value)
-		Library:SetAccent(Value) -- recolors the whole UI live
-	end,
+--// Dashboard tab: big groupboxes span both columns \\--
+local Overview = Tabs.Dashboard:AddBigGroupbox({
+	Name = "Overview",
+	Description = "Big groupboxes take the full width and unlock extra elements",
+	IconName = "gauge",
 })
 
-MenuGroup:AddLabel("Press RightControl to hide/show the menu", true)
+-- Big groupbox only: stat cards
+local Stats = Overview:AddStatCards("Stats", {
+	Cards = {
+		{ Title = "Kills", Value = 0, Icon = "swords" },
+		{ Title = "Coins", Value = 1250, Icon = "coins" },
+		{ Title = "Session", Value = "0m", Icon = "clock" },
+	},
+})
 
-MenuGroup:AddButton({
-	Text = "Unload",
+-- Big groupbox only: progress bar
+local Progress = Overview:AddProgressBar("FarmProgress", {
+	Text = "Auto farm progress",
+	Default = 35,
+	Max = 100,
+	Percent = true, -- false shows "35 / 100" (+ Suffix) instead
+})
+
+Overview:AddButton({
+	Text = "Add 10% progress",
 	Func = function()
-		Library:Unload()
+		Progress:SetValue(Progress.Value + 10)
+		Stats:SetValue("Kills", Stats:GetValue("Kills") + 1)
+	end,
+}):AddButton({
+	Text = "Reset",
+	Func = function()
+		Progress:SetValue(0)
+		Stats:SetValue("Kills", 0)
 	end,
 })
+
+-- Normal groupboxes after a big one start a new row of columns below it
+local Movement = Tabs.Dashboard:AddLeftGroupbox("Movement", "footprints")
+
+Movement:AddCheckbox("InfiniteJump", {
+	Text = "Infinite jump",
+	Default = false,
+})
+
+Movement:AddToggle("Fly", {
+	Text = "Fly",
+	Default = false,
+	Tooltip = "Right click the keybind to change its mode",
+}):AddKeyPicker("FlyKey", {
+	Default = "F",
+	Mode = "Toggle", -- Toggle / Hold / Always
+	SyncToggleState = true, -- pressing F flips the toggle
+	Text = "Fly",
+	Callback = function(State)
+		print("[cb] Fly key state:", State)
+	end,
+	ChangedCallback = function(NewKey)
+		print("[cb] Fly key changed to:", NewKey)
+	end,
+})
+
+Movement:AddLabel("Sprint (hold)"):AddKeyPicker("SprintKey", {
+	Default = "LeftShift",
+	Mode = "Hold",
+	Text = "Sprint",
+})
+
+local Misc = Tabs.Dashboard:AddRightGroupbox("Misc", "wand-sparkles")
+
+Misc:AddInput("WebhookName", {
+	Text = "Display name",
+	Default = "",
+	Placeholder = "Type something...",
+	Finished = false, -- true = only fires when you press enter
+	Callback = function(Value)
+		print("[cb] Input changed:", Value)
+	end,
+})
+
+Misc:AddInput("TargetFPS", {
+	Text = "Target FPS",
+	Default = "60",
+	Numeric = true,
+	Finished = true,
+	MaxLength = 3,
+})
+
+Misc:AddButton({
+	Text = "Send notification",
+	Func = function()
+		Library:Notify({
+			Title = "Hello!",
+			Description = "Notifications slide in from the bottom right.",
+			Time = 4,
+		})
+	end,
+})
+
+local Console = Tabs.Dashboard:AddBigGroupbox("Console", "terminal")
+
+-- Big groupbox only: log / console
+local Log = Console:AddLog("Log", {
+	Height = 140,
+	MaxLines = 200,
+	Timestamps = true,
+})
+
+Log:Log("Script loaded")
+Log:Log("Accent colored line", Library.Scheme.AccentColor)
+Log:Log("Errors can be red", Color3.fromRGB(255, 101, 104))
+
+Console:AddButton({
+	Text = "Log something",
+	Func = function()
+		Log:Log("Clicked at " .. os.date("%H:%M:%S"))
+	end,
+}):AddButton({
+	Text = "Clear",
+	Func = function()
+		Log:Clear()
+	end,
+})
+
+local StartTime = os.clock()
+task.spawn(function()
+	while not Library.Unloaded do
+		Stats:SetValue("Session", math.floor((os.clock() - StartTime) / 60) .. "m")
+		task.wait(5)
+	end
+end)
 
 Library:OnUnload(function()
 	print("Unloaded!")
