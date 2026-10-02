@@ -71,6 +71,10 @@ local Library = {
 
     ToggleKeybind = Enum.KeyCode.RightControl,
     CornerRadius = 8,
+
+    -- DPI scaling (like Obsidian): every top level piece of UI has a UIScale in Library.Scales.
+    DPIScale = 1,
+    Scales = {},
     IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled,
 
     --// Syde palette, pushed darker \\--
@@ -166,7 +170,7 @@ local Defaults = {
         FontFace = "Font",
         RichText = true,
         TextColor3 = "FontColor",
-        TextSize = 13,
+        TextSize = 14,
     },
     TextButton = {
         AutoButtonColor = false,
@@ -174,7 +178,7 @@ local Defaults = {
         FontFace = "Font",
         Text = "",
         TextColor3 = "FontColor",
-        TextSize = 13,
+        TextSize = 14,
     },
     TextBox = {
         BorderSizePixel = 0,
@@ -184,7 +188,7 @@ local Defaults = {
             return Library.Scheme.FontColor:Lerp(Library.Scheme.BackgroundColor, 0.6)
         end,
         TextColor3 = "FontColor",
-        TextSize = 13,
+        TextSize = 14,
     },
 }
 
@@ -412,6 +416,32 @@ local function RegisterScroll(Frame)
     return Frame
 end
 
+local function NewScale(Parent)
+    local Scale = New("UIScale", { Scale = Library.DPIScale, Parent = Parent })
+    table.insert(Library.Scales, Scale)
+    return Scale
+end
+
+-- Accepts 100, "100%" or "100".
+function Library:SetDPIScale(Percent)
+    if typeof(Percent) == "string" then
+        Percent = tonumber((Percent:gsub("%%", "")))
+    end
+    Percent = math.clamp(tonumber(Percent) or 100, 25, 300)
+    Library.DPIScale = Percent / 100
+
+    for _, Scale in Library.Scales do
+        Scale.Scale = Library.DPIScale
+    end
+
+    if Library.OpenedPopup then
+        Library.OpenedPopup.Reposition()
+    end
+    if Library.Window and Library.Window.FitToScreen then
+        Library.Window.FitToScreen()
+    end
+end
+
 --// ScreenGui \\--
 local ScreenGui = New("ScreenGui", {
     Name = "Ui3",
@@ -442,7 +472,7 @@ local TooltipLabel = New("TextLabel", {
     BackgroundColor3 = "MainColor",
     BackgroundTransparency = 0,
     Text = "",
-    TextSize = 12,
+    TextSize = 13,
     TextWrapped = true,
     TextXAlignment = Enum.TextXAlignment.Left,
     Visible = false,
@@ -453,6 +483,7 @@ Corner(TooltipLabel, 6)
 Stroke(TooltipLabel)
 Padding(TooltipLabel, 5, 5, 8, 8)
 New("UISizeConstraint", { MaxSize = Vector2.new(260, math.huge), Parent = TooltipLabel })
+NewScale(TooltipLabel)
 
 local HoveredTooltip = nil
 
@@ -622,7 +653,7 @@ function Library:CreatePopup(Holder, Settings)
     })
     Corner(Frame, 8)
     Stroke(Frame)
-    local Scale = New("UIScale", { Parent = Frame })
+    local Scale = NewScale(Frame)
 
     Popup.Frame = Frame
 
@@ -635,12 +666,15 @@ function Library:CreatePopup(Holder, Settings)
         end
 
         local Screen = GetScreenSize()
-        local Width = Settings.GetWidth and Settings.GetWidth() or Frame.Size.X.Offset
+        -- GetWidth returns on-screen pixels; the frame's own size is in unscaled units.
+        local Width = Settings.GetWidth and math.floor(Settings.GetWidth() / Library.DPIScale + 0.5)
+            or Frame.Size.X.Offset
         if Width ~= Frame.Size.X.Offset then
             Frame.Size = UDim2.fromOffset(Width, Frame.Size.Y.Offset)
         end
 
-        local Size = Frame.AbsoluteSize / math.max(Scale.Scale, 0.01)
+        -- On-screen size once the open animation finishes.
+        local Size = Frame.AbsoluteSize / math.max(Scale.Scale, 0.01) * Library.DPIScale
         local HolderPos, HolderSize = Holder.AbsolutePosition, Holder.AbsoluteSize
 
         local X = if Settings.Align == "Right" then HolderPos.X + HolderSize.X - Size.X else HolderPos.X
@@ -667,8 +701,8 @@ function Library:CreatePopup(Holder, Settings)
 
         Frame.Visible = true
         Shadow.Visible = true
-        Scale.Scale = 0.95
-        Tween(Scale, Library.TweenInfo, { Scale = 1 })
+        Scale.Scale = Library.DPIScale * 0.95
+        Tween(Scale, Library.TweenInfo, { Scale = Library.DPIScale })
 
         if Popup.OnOpen then
             Popup.OnOpen()
@@ -712,17 +746,24 @@ function Library:CreatePopup(Holder, Settings)
 end
 
 --// Notifications \\--
+-- Same card language as groupboxes: icon + title header, optional description, and a slim
+-- accent timer track like the slider's. They slide in from the right and follow the DPI scale.
 local NotifyHolder = New("Frame", {
     AnchorPoint = Vector2.new(1, 1),
     BackgroundTransparency = 1,
-    Position = UDim2.new(1, -14, 1, -14),
-    Size = UDim2.new(0, 270, 1, -28),
+    Position = UDim2.new(1, -16, 1, -16),
+    Size = UDim2.new(0, 300, 1, -32),
     ZIndex = 200,
     Parent = ScreenGui,
 })
-List(NotifyHolder, 8, { VerticalAlignment = Enum.VerticalAlignment.Bottom })
+List(NotifyHolder, 10, {
+    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+    VerticalAlignment = Enum.VerticalAlignment.Bottom,
+})
+NewScale(NotifyHolder)
 
 local NotifyCount = 0
+local SlideOffset = 340
 
 function Library:Notify(Info, Time)
     if typeof(Info) ~= "table" then
@@ -732,6 +773,7 @@ function Library:Notify(Info, Time)
 
     NotifyCount += 1
 
+    -- Holder keeps the list slot; Slider is what moves in and out.
     local Holder = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
@@ -741,73 +783,140 @@ function Library:Notify(Info, Time)
         Parent = NotifyHolder,
     })
 
-    local Card = New("Frame", {
+    local Slider = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = "MainColor",
-        ClipsDescendants = true,
-        Position = UDim2.fromOffset(300, 0),
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(SlideOffset, 0),
         Size = UDim2.fromScale(1, 0),
         ZIndex = 200,
         Parent = Holder,
     })
-    Corner(Card, 8)
-    Stroke(Card)
 
-    local Bar = New("Frame", {
-        BackgroundColor3 = "AccentColor",
-        Size = UDim2.new(0, 3, 1, 0),
-        ZIndex = 201,
-        Parent = Card,
+    local Shadow = New("ImageLabel", {
+        Image = Assets.Shadow,
+        ImageColor3 = "DarkColor",
+        ImageTransparency = 0.35,
+        Position = UDim2.fromOffset(-18, -18),
+        ScaleType = Enum.ScaleType.Slice,
+        Size = UDim2.fromOffset(336, 100),
+        SliceCenter = Rect.new(23, 23, 277, 277),
+        ZIndex = 200,
+        Parent = Slider,
     })
-    Sheen(Bar)
 
-    local Content = New("Frame", {
+    local Card = New("TextButton", {
         AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
+        BackgroundColor3 = "MainColor",
         Size = UDim2.fromScale(1, 0),
         ZIndex = 201,
+        Parent = Slider,
+    })
+    Corner(Card, Library.CornerRadius)
+    Stroke(Card)
+    Padding(Card, 11, 12, 12, 12)
+    List(Card, 8)
+
+    -- Shadow follows the card's real height (unscaled units).
+    local function SizeShadow()
+        local Height = Card.AbsoluteSize.Y / math.max(Library.DPIScale, 0.01)
+        Shadow.Size = UDim2.fromOffset(300 + 36, math.floor(Height + 36))
+    end
+    Card:GetPropertyChangedSignal("AbsoluteSize"):Connect(SizeShadow)
+
+    --// Header: icon, title, close \--
+    local Header = New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 20),
+        ZIndex = 202,
         Parent = Card,
     })
-    Padding(Content, 10, 12, 14, 12)
-    List(Content, 3)
+
+    local IconData = Library:GetIcon(Info.Icon or "bell")
+    local TitleX = 0
+    if IconData then
+        local Icon = New("ImageLabel", {
+            ImageColor3 = IconData.Custom and "WhiteColor" or "AccentColor",
+            Position = UDim2.fromOffset(0, 1),
+            Size = UDim2.fromOffset(18, 18),
+            ZIndex = 202,
+            Parent = Header,
+        })
+        ApplyIcon(Icon, IconData)
+        TitleX = 26
+    end
 
     local Title = New("TextLabel", {
-        AutomaticSize = Enum.AutomaticSize.Y,
         FontFace = SemiBold,
-        Size = UDim2.fromScale(1, 0),
+        Position = UDim2.fromOffset(TitleX, 0),
+        Size = UDim2.new(1, -TitleX - 24, 1, 0),
         Text = Info.Title or "Notification",
-        TextSize = 13,
-        TextWrapped = true,
+        TextSize = 15,
+        TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
-        ZIndex = 201,
-        Parent = Content,
+        ZIndex = 202,
+        Parent = Header,
     })
 
+    local Close = New("TextButton", {
+        AnchorPoint = Vector2.new(1, 0),
+        BackgroundTransparency = 1,
+        Position = UDim2.fromScale(1, 0),
+        Size = UDim2.fromOffset(20, 20),
+        ZIndex = 203,
+        Parent = Header,
+    })
+    local CloseIcon = Library:GetIcon("x")
+    local CloseGlyph
+    if CloseIcon then
+        CloseGlyph = New("ImageLabel", {
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.6,
+            Position = UDim2.fromOffset(2, 2),
+            Size = UDim2.fromOffset(16, 16),
+            ZIndex = 203,
+            Parent = Close,
+        })
+        ApplyIcon(CloseGlyph, CloseIcon)
+    else
+        Close.Text = "x"
+        Close.TextTransparency = 0.6
+    end
+
+    --// Body \--
     local Description
-    if Info.Description then
+    if Info.Description and Info.Description ~= "" then
         Description = New("TextLabel", {
             AutomaticSize = Enum.AutomaticSize.Y,
             LayoutOrder = 1,
             Size = UDim2.fromScale(1, 0),
             Text = Info.Description,
-            TextSize = 12,
+            TextSize = 14,
             TextTransparency = 0.4,
             TextWrapped = true,
             TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 201,
-            Parent = Content,
+            ZIndex = 202,
+            Parent = Card,
         })
     end
 
-    local Timer = New("Frame", {
-        AnchorPoint = Vector2.new(0, 1),
-        BackgroundColor3 = "AccentColor",
-        BackgroundTransparency = 0.4,
-        Position = UDim2.fromScale(0, 1),
-        Size = UDim2.new(1, 0, 0, 2),
+    --// Timer: slider-style track \--
+    local Track = New("Frame", {
+        BackgroundColor3 = "SecondaryColor",
+        LayoutOrder = 2,
+        Size = UDim2.new(1, 0, 0, 4),
         ZIndex = 202,
         Parent = Card,
     })
+    Corner(Track, UDim.new(1, 0))
+
+    local Fill = New("Frame", {
+        BackgroundColor3 = "AccentColor",
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 203,
+        Parent = Track,
+    })
+    Corner(Fill, UDim.new(1, 0))
+    Sheen(Fill)
 
     local Notification = { Destroyed = false }
 
@@ -816,7 +925,7 @@ function Library:Notify(Info, Time)
             return
         end
         Notification.Destroyed = true
-        local Out = Tween(Card, Library.TweenInfo, { Position = UDim2.fromOffset(300, 0) })
+        local Out = Tween(Slider, Library.TweenInfo, { Position = UDim2.fromOffset(SlideOffset, 0) })
         Out.Completed:Connect(function()
             Holder:Destroy()
         end)
@@ -832,8 +941,25 @@ function Library:Notify(Info, Time)
         end
     end
 
-    Tween(Card, Library.TweenInfo, { Position = UDim2.fromOffset(0, 0) })
-    Tween(Timer, TweenInfo.new(Duration, Enum.EasingStyle.Linear), { Size = UDim2.new(0, 0, 0, 2) })
+    OnHover(Close, function()
+        if CloseGlyph then
+            Tween(CloseGlyph, Library.FastTweenInfo, { ImageTransparency = 0.1 })
+        end
+    end, function()
+        if CloseGlyph then
+            Tween(CloseGlyph, Library.FastTweenInfo, { ImageTransparency = 0.6 })
+        end
+    end)
+    Close.MouseButton1Click:Connect(function()
+        Notification:Destroy()
+    end)
+    Card.MouseButton1Click:Connect(function()
+        Notification:Destroy()
+    end)
+
+    SizeShadow()
+    Tween(Slider, Library.TweenInfo, { Position = UDim2.fromOffset(0, 0) })
+    Tween(Fill, TweenInfo.new(Duration, Enum.EasingStyle.Linear), { Size = UDim2.fromScale(0, 1) })
     task.delay(Duration, function()
         Notification:Destroy()
     end)
@@ -1037,7 +1163,7 @@ function Funcs:AddColorPicker(Idx, Info)
         New("TextLabel", {
             Size = UDim2.new(1, 0, 0, 14),
             Text = ColorPicker.Title,
-            TextSize = 13,
+            TextSize = 14,
             TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 51,
             Parent = Menu,
@@ -1154,7 +1280,7 @@ function Funcs:AddColorPicker(Idx, Info)
             PlaceholderText = Placeholder,
             Size = UDim2.fromScale(1, 1),
             Text = "",
-            TextSize = 12,
+            TextSize = 13,
             ZIndex = 51,
             Parent = InputRow,
         })
@@ -1340,7 +1466,7 @@ function Funcs:AddKeyPicker(Idx, Info)
         BackgroundColor3 = "SecondaryColor",
         Size = UDim2.fromOffset(0, 18),
         Text = "",
-        TextSize = 11,
+        TextSize = 12,
         TextTransparency = 0.25,
         Parent = AddonHolder,
     })
@@ -1423,7 +1549,7 @@ function Funcs:AddKeyPicker(Idx, Info)
                 LayoutOrder = Order,
                 Size = UDim2.new(1, 0, 0, 24),
                 Text = Mode,
-                TextSize = 12,
+                TextSize = 13,
                 ZIndex = 52,
                 Parent = ModePopup.Frame,
             })
@@ -1608,7 +1734,7 @@ function Funcs:AddDivider(Text)
             LayoutOrder = 1,
             Size = UDim2.fromOffset(0, 14),
             Text = Text,
-            TextSize = 12,
+            TextSize = 13,
             TextTransparency = 0.5,
             Parent = Holder,
         })
@@ -1692,7 +1818,7 @@ local function BuildToggle(Groupbox, Idx, Info, Variant)
                 Size = UDim2.fromScale(1, 1),
                 Text = "✓",
                 TextColor3 = "BackgroundColor",
-                TextSize = 13,
+                TextSize = 14,
                 TextTransparency = 1,
                 Parent = Box,
             })
@@ -1961,14 +2087,16 @@ function Funcs:AddButton(...)
             Circle.BackgroundColor3 = Library.Scheme.AccentColor
             Circle.BackgroundTransparency = 0.8
             Circle.BorderSizePixel = 0
-            Circle.Position =
-                UDim2.fromOffset(Position.X - Base.AbsolutePosition.X, Position.Y - Base.AbsolutePosition.Y)
+            Circle.Position = UDim2.fromOffset(
+                (Position.X - Base.AbsolutePosition.X) / Library.DPIScale,
+                (Position.Y - Base.AbsolutePosition.Y) / Library.DPIScale
+            )
             Circle.Size = UDim2.fromOffset(0, 0)
             Circle.ZIndex = 1
             Corner(Circle, UDim.new(1, 0))
             Circle.Parent = Base
 
-            local Diameter = math.max(Base.AbsoluteSize.X, Base.AbsoluteSize.Y) * 2.2
+            local Diameter = math.max(Base.AbsoluteSize.X, Base.AbsoluteSize.Y) / Library.DPIScale * 2.2
             Tween(Circle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {
                 Size = UDim2.fromOffset(Diameter, Diameter),
                 BackgroundTransparency = 1,
@@ -2255,7 +2383,7 @@ function Funcs:AddSlider(Idx, Info)
         Position = UDim2.fromScale(1, 0),
         Size = UDim2.fromOffset(90, 16),
         Text = "",
-        TextSize = 12,
+        TextSize = 13,
         TextTransparency = 0.4,
         TextXAlignment = Enum.TextXAlignment.Right,
         Parent = Holder,
@@ -2642,7 +2770,7 @@ function Funcs:AddDropdown(Idx, Info)
             PlaceholderText = "Search...",
             Size = UDim2.new(1, 0, 0, RowHeight),
             Text = "",
-            TextSize = 12,
+            TextSize = 13,
             TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 51,
             Parent = Menu,
@@ -2675,7 +2803,7 @@ function Funcs:AddDropdown(Idx, Info)
         LayoutOrder = 999999,
         Size = UDim2.new(1, 0, 0, RowHeight),
         Text = "No values",
-        TextSize = 12,
+        TextSize = 13,
         TextTransparency = 0.6,
         Visible = false,
         ZIndex = 52,
@@ -2829,7 +2957,7 @@ function Funcs:AddDropdown(Idx, Info)
                 Position = UDim2.fromOffset(10, 0),
                 Size = UDim2.new(1, Dropdown.Multi and -36 or -16, 1, 0),
                 Text = Row.Label,
-                TextSize = 12,
+                TextSize = 13,
                 TextTruncate = Enum.TextTruncate.AtEnd,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 ZIndex = 53,
@@ -3193,7 +3321,7 @@ function Funcs:AddProgressBar(Idx, Info)
         Size = UDim2.fromOffset(110, 16),
         Text = "",
         TextColor3 = "AccentColor",
-        TextSize = 12,
+        TextSize = 13,
         TextXAlignment = Enum.TextXAlignment.Right,
         Parent = Holder,
     })
@@ -3319,7 +3447,7 @@ function Funcs:AddStatCards(Idx, Info)
         New("TextLabel", {
             Size = UDim2.new(1, IconData and -20 or 0, 0, 14),
             Text = Card.Title or "",
-            TextSize = 11,
+            TextSize = 12,
             TextTransparency = 0.5,
             TextTruncate = Enum.TextTruncate.AtEnd,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -3332,7 +3460,7 @@ function Funcs:AddStatCards(Idx, Info)
             Position = UDim2.fromScale(0, 1),
             Size = UDim2.new(1, 0, 0, 20),
             Text = tostring(Card.Value or ""),
-            TextSize = 17,
+            TextSize = 18,
             TextTruncate = Enum.TextTruncate.AtEnd,
             TextXAlignment = Enum.TextXAlignment.Left,
             Parent = Frame,
@@ -3441,7 +3569,7 @@ function Funcs:AddLog(Idx, Info)
             Size = UDim2.fromScale(1, 0),
             Text = Stamp .. tostring(Text),
             TextColor3 = Color or "FontColor",
-            TextSize = 12,
+            TextSize = 13,
             TextTransparency = Color and 0 or 0.15,
             TextWrapped = true,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -3516,7 +3644,7 @@ local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
         FontFace = SemiBold,
         Size = UDim2.new(1, 0, 0, 18),
         Text = Info.Name or "Groupbox",
-        TextSize = 14,
+        TextSize = 15,
         TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left,
         Parent = Texts,
@@ -3528,7 +3656,7 @@ local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
             LayoutOrder = 1,
             Size = UDim2.fromScale(1, 0),
             Text = Info.Description,
-            TextSize = 12,
+            TextSize = 13,
             TextTransparency = 0.5,
             TextWrapped = true,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -3858,12 +3986,16 @@ function Library:Toggle(Value)
 
     if Value then
         Window.Root.Visible = true
-        Window.Scale.Scale = 0.96
-        Tween(Window.Scale, Library.TweenInfo, { Scale = 1 })
+        Window.Scale.Scale = Library.DPIScale * 0.96
+        Tween(Window.Scale, Library.TweenInfo, { Scale = Library.DPIScale })
     else
         CloseOpenedPopup()
         HideTooltip()
-        local T = Tween(Window.Scale, TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.In), { Scale = 0.96 })
+        local T = Tween(
+            Window.Scale,
+            TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+            { Scale = Library.DPIScale * 0.96 }
+        )
         T.Completed:Connect(function()
             if not Library.Toggled then
                 Window.Root.Visible = false
@@ -3922,12 +4054,17 @@ function Library:CreateWindow(WindowInfo)
         Library:LoadAutoloadConfig()
     end
 
+    if WindowInfo.DPIScale then
+        Library:SetDPIScale(WindowInfo.DPIScale)
+    end
+
     local SidebarWidth = WindowInfo.SidebarWidth
     local Screen = GetScreenSize()
 
+    -- Sizes are in unscaled units; on screen they're multiplied by the DPI scale.
     -- Even sizes + a centre anchor at whole pixels keeps every edge (and all text) on the pixel grid.
-    local Width = Even(math.min(WindowInfo.Size.X.Offset, Screen.X - 32))
-    local Height = Even(math.min(WindowInfo.Size.Y.Offset, Screen.Y - 32))
+    local Width = Even(math.min(WindowInfo.Size.X.Offset, (Screen.X - 32) / Library.DPIScale))
+    local Height = Even(math.min(WindowInfo.Size.Y.Offset, (Screen.Y - 32) / Library.DPIScale))
 
     local Window = {
         Tabs = {},
@@ -3950,7 +4087,7 @@ function Library:CreateWindow(WindowInfo)
         Visible = false,
         Parent = ScreenGui,
     })
-    local Scale = New("UIScale", { Parent = Root })
+    local Scale = NewScale(Root)
 
     New("ImageLabel", {
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -4018,7 +4155,7 @@ function Library:CreateWindow(WindowInfo)
         LayoutOrder = 1,
         Size = UDim2.fromOffset(0, 20),
         Text = WindowInfo.Title,
-        TextSize = 18,
+        TextSize = 19,
         Parent = TitleHolder,
     })
 
@@ -4036,7 +4173,7 @@ function Library:CreateWindow(WindowInfo)
         FontFace = SemiBold,
         Size = UDim2.new(1, 0, 0, 16),
         Text = "",
-        TextSize = 14,
+        TextSize = 15,
         TextXAlignment = Enum.TextXAlignment.Left,
         Parent = TabInfo,
     })
@@ -4044,7 +4181,7 @@ function Library:CreateWindow(WindowInfo)
         LayoutOrder = 1,
         Size = UDim2.new(1, 0, 0, 14),
         Text = "",
-        TextSize = 12,
+        TextSize = 13,
         TextTransparency = 0.5,
         TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -4093,7 +4230,7 @@ function Library:CreateWindow(WindowInfo)
     local FooterLabel = New("TextLabel", {
         Size = UDim2.fromScale(1, 1),
         Text = WindowInfo.Footer,
-        TextSize = 12,
+        TextSize = 13,
         TextTransparency = 0.5,
         Parent = BottomBar,
     })
@@ -4145,15 +4282,28 @@ function Library:CreateWindow(WindowInfo)
             StartSize = Vector2.new(Root.Size.X.Offset, Root.Size.Y.Offset)
             StartPos = Root.Position
         end, function(Position)
+            local Dpi = Library.DPIScale
             local Delta = Position - StartInput
             local Bounds = GetScreenSize()
-            local NewX = Even(math.clamp(StartSize.X + Delta.X, SidebarWidth + 320, Bounds.X))
-            local NewY = Even(math.clamp(StartSize.Y + Delta.Y, 300, Bounds.Y))
+            local NewX = Even(math.clamp(StartSize.X + Delta.X / Dpi, SidebarWidth + 320, math.max(SidebarWidth + 320, Bounds.X / Dpi)))
+            local NewY = Even(math.clamp(StartSize.Y + Delta.Y / Dpi, 300, math.max(300, Bounds.Y / Dpi)))
 
-            -- Root is anchored at its centre; shift it by half the growth so the top-left stays put.
+            -- Root is anchored at its centre; shift it by half the (on-screen) growth so the top-left stays put.
             Root.Size = UDim2.fromOffset(NewX, NewY)
-            Root.Position = StartPos + UDim2.fromOffset((NewX - StartSize.X) / 2, (NewY - StartSize.Y) / 2)
+            Root.Position = StartPos
+                + UDim2.fromOffset(math.floor((NewX - StartSize.X) * Dpi / 2), math.floor((NewY - StartSize.Y) * Dpi / 2))
         end)
+    end
+
+    -- Keep the window on screen when the DPI scale grows.
+    function Window.FitToScreen()
+        local Bounds = GetScreenSize()
+        local Dpi = Library.DPIScale
+        local MaxX = math.max(SidebarWidth + 320, (Bounds.X - 16) / Dpi)
+        local MaxY = math.max(300, (Bounds.Y - 16) / Dpi)
+        if Root.Size.X.Offset > MaxX or Root.Size.Y.Offset > MaxY then
+            Root.Size = UDim2.fromOffset(Even(math.min(Root.Size.X.Offset, MaxX)), Even(math.min(Root.Size.Y.Offset, MaxY)))
+        end
     end
 
     Window.Root = Root
@@ -4232,7 +4382,7 @@ function Library:CreateWindow(WindowInfo)
             Position = UDim2.fromOffset(TabIcon and 40 or 14, 0),
             Size = UDim2.new(1, TabIcon and -48 or -22, 1, 0),
             Text = Name,
-            TextSize = 13,
+            TextSize = 14,
             TextTransparency = 0.5,
             TextTruncate = Enum.TextTruncate.AtEnd,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -4445,7 +4595,7 @@ function Library:CreateWindow(WindowInfo)
         Gear = New("TextLabel", {
             Size = UDim2.fromScale(1, 1),
             Text = "⚙",
-            TextSize = 16,
+            TextSize = 17,
             TextTransparency = 0.4,
             ZIndex = 3,
             Parent = SettingsButton,
@@ -4483,7 +4633,7 @@ function Library:CreateWindow(WindowInfo)
         FontFace = SemiBold,
         Size = UDim2.new(1, -30, 1, 0),
         Text = "Settings",
-        TextSize = 14,
+        TextSize = 15,
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 9,
         Parent = PanelHeader,
@@ -4619,6 +4769,27 @@ function Library:CreateWindow(WindowInfo)
                     end
                 end)
                 Library:Notify({ Title = "Invalid menu keybind", Description = "Pick a keyboard key.", Time = 3 })
+            end
+        end,
+    })
+
+    local DPIValues = { 50, 75, 90, 100, 110, 125, 150, 175, 200 }
+    local CurrentDPI = math.floor(Library.DPIScale * 100 + 0.5)
+    if not table.find(DPIValues, CurrentDPI) then
+        table.insert(DPIValues, CurrentDPI)
+        table.sort(DPIValues)
+    end
+    for Index, Value in DPIValues do
+        DPIValues[Index] = Value .. "%"
+    end
+
+    MenuBox:AddDropdown("Ui3_DPI", {
+        Text = "DPI scale",
+        Values = DPIValues,
+        Default = CurrentDPI .. "%",
+        Callback = function(Value)
+            if Value then
+                Library:SetDPIScale(Value)
             end
         end,
     })
