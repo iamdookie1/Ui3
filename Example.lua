@@ -104,6 +104,56 @@ LeftGroupBox:AddButton({
 	end,
 })
 
+LeftGroupBox:AddDivider()
+
+-- Groupbox:AddSlider(Index, Options)
+LeftGroupBox:AddSlider("MySlider", {
+	Text = "This is my slider!",
+	Default = 0,
+	Min = 0,
+	Max = 5,
+	Rounding = 1, -- decimal places
+	Compact = false, -- true hides the separate value text
+
+	Tooltip = "Click the number on the right to type a value",
+
+	Callback = function(Value)
+		print("[cb] MySlider was changed! New value:", Value)
+	end,
+})
+
+LeftGroupBox:AddSlider("WalkSpeed", {
+	Text = "Walk speed",
+	Default = 16,
+	Min = 0,
+	Max = 200,
+	Rounding = 0,
+	Suffix = " studs",
+	HideMax = true,
+})
+
+LeftGroupBox:AddSlider("CustomSlider", {
+	Text = "Custom display",
+	Default = 0,
+	Min = 0,
+	Max = 5,
+	Rounding = 0,
+	FormatDisplayValue = function(Slider, Value)
+		if Value == Slider.Max then
+			return "Everything"
+		end
+		if Value == Slider.Min then
+			return "Nothing"
+		end
+		-- return nil to use the normal formatting
+	end,
+})
+
+Options.MySlider:OnChanged(function()
+	print("MySlider was changed! New value:", Options.MySlider.Value)
+end)
+Options.MySlider:SetValue(3)
+
 local RightGroupBox = Tabs.Main:AddRightGroupbox("Another groupbox", "palette")
 
 RightGroupBox:AddToggle("ESP", {
@@ -126,6 +176,88 @@ end)
 Options.ESPColor:OnChanged(function()
 	print("ESP color is now", Options.ESPColor.Value)
 end)
+
+--// Dropdowns \\--
+local DropdownGroupBox = Tabs.Main:AddGroupbox({
+	Side = "Right",
+	Name = "Dropdowns",
+	IconName = "list",
+})
+
+-- Groupbox:AddDropdown(Index, Options)
+DropdownGroupBox:AddDropdown("MyDropdown", {
+	Values = { "This", "is", "a", "dropdown" },
+	Default = 1, -- index of the value, or the value itself
+	Multi = false,
+
+	Text = "A dropdown",
+	Tooltip = "This is a tooltip",
+
+	Callback = function(Value)
+		print("[cb] Dropdown got changed. New value:", Value)
+	end,
+})
+
+Options.MyDropdown:OnChanged(function()
+	print("Dropdown got changed. New value:", Options.MyDropdown.Value)
+end)
+Options.MyDropdown:SetValue("This")
+
+DropdownGroupBox:AddDropdown("MySearchableDropdown", {
+	Values = { "Apple", "Banana", "Cherry", "Grape", "Lemon", "Mango", "Orange", "Peach", "Pear", "Plum" },
+	Default = "Mango",
+	Searchable = true, -- adds a search box
+	Text = "A searchable dropdown",
+})
+
+DropdownGroupBox:AddDropdown("MyMultiDropdown", {
+	Values = { "This", "is", "a", "dropdown" },
+	Default = 1,
+	Multi = true, -- Value becomes { [value] = true }
+
+	Text = "A multi dropdown",
+
+	Callback = function(Value)
+		print("[cb] Multi dropdown got changed:")
+		for Key, Selected in Value do
+			print(Key, Selected)
+		end
+	end,
+})
+
+Options.MyMultiDropdown:SetValue({
+	This = true,
+	is = true,
+})
+
+-- Dictionary values: keys are what you get in .Value, values are the labels shown
+DropdownGroupBox:AddDropdown("MyDictionaryDropdown", {
+	Values = {
+		item01 = "Excalibur",
+		item05 = "Aegis Shield",
+		item06 = "Wooden Club",
+	},
+	Default = "item01",
+	DisabledValues = { "item05" }, -- shown but can't be picked
+	Text = "A dictionary dropdown",
+})
+
+DropdownGroupBox:AddDropdown("MyPlayerDropdown", {
+	SpecialType = "Player", -- fills itself with players and stays up to date
+	ExcludeLocalPlayer = true,
+	Text = "A player dropdown",
+
+	Callback = function(Value)
+		print("[cb] Player dropdown got changed:", Value)
+	end,
+})
+
+DropdownGroupBox:AddDropdown("MyDisabledDropdown", {
+	Values = { "Can't", "touch", "this" },
+	Default = 1,
+	Disabled = true,
+	Text = "A disabled dropdown",
+})
 
 --// Visuals tab \\--
 local ColorBox = Tabs.Visuals:AddLeftGroupbox("Colors", "brush")
