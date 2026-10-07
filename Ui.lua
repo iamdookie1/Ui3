@@ -83,7 +83,10 @@ local Library = {
         ContainerColor = Color3.fromRGB(11, 11, 11),
         MainColor = Color3.fromRGB(14, 14, 14),
         SecondaryColor = Color3.fromRGB(19, 19, 19),
-        AccentColor = Color3.fromRGB(255, 151, 227),
+        -- Fixed monochrome accent: it breathes between AccentDark and AccentLight (see AccentAnimation).
+        AccentColor = Color3.fromRGB(200, 200, 200),
+        AccentDark = Color3.fromRGB(135, 135, 135),
+        AccentLight = Color3.fromRGB(240, 240, 240),
         OutlineColor = Color3.fromRGB(28, 28, 28),
         FontColor = Color3.fromRGB(255, 255, 255),
         Font = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium),
@@ -359,9 +362,48 @@ function Library:UpdateColorsUsingRegistry()
     end
 end
 
-function Library:SetAccent(Color)
+-- The accent is part of the theme and can't be changed; kept so old scripts don't error.
+function Library:SetAccent()
+    warn("[Ui3] The accent color is fixed (animated black and white) and can't be changed.")
+end
+
+-- Pushes a new accent shade to everything bound to "AccentColor", without rerunning element updaters.
+local function ApplyAccent(Color)
     Library.Scheme.AccentColor = Color
-    Library:UpdateColorsUsingRegistry()
+    for Object, Properties in Library.Registry do
+        for Property, Value in Properties do
+            if Value == "AccentColor" then
+                Object[Property] = Color
+            end
+        end
+    end
+end
+Library.ApplyAccent = ApplyAccent
+
+--// Animated theme: the accent slowly breathes between grey and soft white \\--
+Library.AccentAnimation = {
+    Enabled = true,
+    Period = 3.5, -- seconds for a full grey -> white -> grey cycle
+    Rate = 30, -- updates per second
+}
+
+do
+    local LastStep = 0
+    Library:GiveSignal(RunService.Heartbeat:Connect(function()
+        local Animation = Library.AccentAnimation
+        if not Animation.Enabled or Library.Unloaded then
+            return
+        end
+
+        local Now = os.clock()
+        if Now - LastStep < 1 / Animation.Rate then
+            return
+        end
+        LastStep = Now
+
+        local Alpha = (math.sin(Now / Animation.Period * math.pi * 2) + 1) / 2
+        ApplyAccent(Library.Scheme.AccentDark:Lerp(Library.Scheme.AccentLight, Alpha))
+    end))
 end
 
 function Library:SetFont(FontFace)
@@ -751,19 +793,19 @@ end
 local NotifyHolder = New("Frame", {
     AnchorPoint = Vector2.new(1, 1),
     BackgroundTransparency = 1,
-    Position = UDim2.new(1, -16, 1, -16),
-    Size = UDim2.new(0, 300, 1, -32),
+    Position = UDim2.new(1, -14, 1, -14),
+    Size = UDim2.new(0, 250, 1, -28),
     ZIndex = 200,
     Parent = ScreenGui,
 })
-List(NotifyHolder, 10, {
+List(NotifyHolder, 8, {
     HorizontalAlignment = Enum.HorizontalAlignment.Right,
     VerticalAlignment = Enum.VerticalAlignment.Bottom,
 })
 NewScale(NotifyHolder)
 
 local NotifyCount = 0
-local SlideOffset = 340
+local SlideOffset = 290
 
 function Library:Notify(Info, Time)
     if typeof(Info) ~= "table" then
@@ -798,7 +840,7 @@ function Library:Notify(Info, Time)
         ImageTransparency = 0.35,
         Position = UDim2.fromOffset(-18, -18),
         ScaleType = Enum.ScaleType.Slice,
-        Size = UDim2.fromOffset(336, 100),
+        Size = UDim2.fromOffset(286, 80),
         SliceCenter = Rect.new(23, 23, 277, 277),
         ZIndex = 200,
         Parent = Slider,
@@ -813,20 +855,20 @@ function Library:Notify(Info, Time)
     })
     Corner(Card, Library.CornerRadius)
     Stroke(Card)
-    Padding(Card, 11, 12, 12, 12)
-    List(Card, 8)
+    Padding(Card, 8, 9, 10, 10)
+    List(Card, 6)
 
     -- Shadow follows the card's real height (unscaled units).
     local function SizeShadow()
         local Height = Card.AbsoluteSize.Y / math.max(Library.DPIScale, 0.01)
-        Shadow.Size = UDim2.fromOffset(300 + 36, math.floor(Height + 36))
+        Shadow.Size = UDim2.fromOffset(250 + 36, math.floor(Height + 36))
     end
     Card:GetPropertyChangedSignal("AbsoluteSize"):Connect(SizeShadow)
 
     --// Header: icon, title, close \--
     local Header = New("Frame", {
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 20),
+        Size = UDim2.new(1, 0, 0, 16),
         ZIndex = 202,
         Parent = Card,
     })
@@ -836,21 +878,20 @@ function Library:Notify(Info, Time)
     if IconData then
         local Icon = New("ImageLabel", {
             ImageColor3 = IconData.Custom and "WhiteColor" or "AccentColor",
-            Position = UDim2.fromOffset(0, 1),
-            Size = UDim2.fromOffset(18, 18),
+            Size = UDim2.fromOffset(16, 16),
             ZIndex = 202,
             Parent = Header,
         })
         ApplyIcon(Icon, IconData)
-        TitleX = 26
+        TitleX = 22
     end
 
     local Title = New("TextLabel", {
         FontFace = SemiBold,
         Position = UDim2.fromOffset(TitleX, 0),
-        Size = UDim2.new(1, -TitleX - 24, 1, 0),
+        Size = UDim2.new(1, -TitleX - 20, 1, 0),
         Text = Info.Title or "Notification",
-        TextSize = 15,
+        TextSize = 13,
         TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
         ZIndex = 202,
@@ -861,7 +902,7 @@ function Library:Notify(Info, Time)
         AnchorPoint = Vector2.new(1, 0),
         BackgroundTransparency = 1,
         Position = UDim2.fromScale(1, 0),
-        Size = UDim2.fromOffset(20, 20),
+        Size = UDim2.fromOffset(16, 16),
         ZIndex = 203,
         Parent = Header,
     })
@@ -871,8 +912,8 @@ function Library:Notify(Info, Time)
         CloseGlyph = New("ImageLabel", {
             ImageColor3 = "FontColor",
             ImageTransparency = 0.6,
-            Position = UDim2.fromOffset(2, 2),
-            Size = UDim2.fromOffset(16, 16),
+            Position = UDim2.fromOffset(1, 1),
+            Size = UDim2.fromOffset(14, 14),
             ZIndex = 203,
             Parent = Close,
         })
@@ -890,7 +931,7 @@ function Library:Notify(Info, Time)
             LayoutOrder = 1,
             Size = UDim2.fromScale(1, 0),
             Text = Info.Description,
-            TextSize = 14,
+            TextSize = 12,
             TextTransparency = 0.4,
             TextWrapped = true,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -903,7 +944,7 @@ function Library:Notify(Info, Time)
     local Track = New("Frame", {
         BackgroundColor3 = "SecondaryColor",
         LayoutOrder = 2,
-        Size = UDim2.new(1, 0, 0, 4),
+        Size = UDim2.new(1, 0, 0, 3),
         ZIndex = 202,
         Parent = Card,
     })
@@ -1863,6 +1904,8 @@ local function BuildToggle(Groupbox, Idx, Info, Variant)
         local Goals = {}
         if Ball then
             local Offset = On and 1 or 0
+            -- Dark knob on the light accent track, light knob on the dark off track.
+            SetThemed(Ball, "BackgroundColor3", On and "BackgroundColor" or "FontColor", TweenData)
             Goals[Ball] = {
                 AnchorPoint = Vector2.new(Offset, 0),
                 Position = UDim2.fromScale(Offset, 0),
@@ -4791,14 +4834,6 @@ function Library:CreateWindow(WindowInfo)
             if Value then
                 Library:SetDPIScale(Value)
             end
-        end,
-    })
-
-    MenuBox:AddLabel("Accent color"):AddColorPicker("Ui3_Accent", {
-        Default = Library.Scheme.AccentColor,
-        Title = "Accent color",
-        Callback = function(Color)
-            Library:SetAccent(Color)
         end,
     })
 

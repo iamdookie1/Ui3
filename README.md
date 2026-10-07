@@ -1,6 +1,6 @@
 # Ui3
 
-A Roblox UI library that combines **Obsidian's layout and API** with **Syde's look**: a very dark theme, a pink accent and smooth, exponential animations.
+A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and an **animated black-and-white accent** that slowly breathes between grey and soft white.
 
 If you've used Obsidian (or Linoria), you already know how to use this. Most scripts carry over with few or no changes.
 
@@ -11,11 +11,11 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 - Color pickers and keybind pickers that attach to toggles and labels
 - Big groupbox only: progress bars, stat cards and a log console
 - Notifications and tooltips
-- A built-in **settings panel** (gear icon, top right) with menu keybind, DPI scale, accent color, configs and unload
+- A built-in **settings panel** (gear icon, top right) with menu keybind, DPI scale, configs and unload
 - **Configs** that save, load and **autoload**, applied as each element is created, so they work even if your script creates elements late
 - **DPI scaling** from 50% to 200%, saved in configs
 - While you drag a slider, color picker or the window, every other element ignores hovers and clicks
-- Theme changes (like the accent color) update the whole UI live
+- An animated monochrome theme: every accent element (toggles, sliders, icons, indicators) pulses together
 
 ## Quick start
 
@@ -118,7 +118,7 @@ local Big = Tab:AddBigGroupbox({ Name = "Overview", Description = "Optional", Ic
 -- or Tab:AddBigGroupbox("Overview", "gauge")
 ```
 
-Icons are [lucide](https://lucide.dev/) names, or a Roblox asset id for a custom image. Lucide icons are tinted with the accent color.
+Icons are [lucide](https://lucide.dev/) names, or a Roblox asset id for a custom image. Lucide icons are tinted with the animated accent.
 
 ## Elements
 
@@ -320,7 +320,7 @@ local Log = Big:AddLog("Log", {
 	Timestamps = true,
 })
 Log:Log("Hello")
-Log:Log("Accent line", Library.Scheme.AccentColor)
+Log:Log("Colored line", Color3.fromRGB(150, 200, 255))
 Log:Clear()
 ```
 
@@ -345,7 +345,7 @@ Notification:Destroy()
 
 The gear icon in the top right opens a panel that every script gets for free:
 
-- **Menu:** menu keybind, DPI scale and accent color
+- **Menu:** menu keybind and DPI scale
 - **Configs:** create, load, overwrite, delete, refresh, set autoload, reset autoload
 - **Script:** unload
 
@@ -358,7 +358,7 @@ Extra:AddToggle("Watermark", { Text = "Show watermark" })
 
 ## Configs
 
-Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, color pickers, keybinds, inputs, and the menu keybind, DPI and accent from settings.
+Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, color pickers, keybinds, inputs, and the menu keybind and DPI from settings.
 
 Autoload applies saved values the moment each element is created. That way it works even if your script creates elements after a wait. Loading a value runs that element's callback, so features turn back on.
 
@@ -383,7 +383,6 @@ Each of these returns `success, errorMessage`. Configs need an executor with fil
 ## Theme, DPI and other library functions
 
 ```lua
-Library:SetAccent(Color3.fromRGB(88, 141, 255))   -- recolors the whole UI live
 Library:SetFont(Enum.Font.Gotham)
 Library:SetDPIScale(125)                           -- 50 to 200, like Obsidian
 
@@ -392,6 +391,15 @@ Library:Toggle(true)
 
 Library:OnUnload(function() print("bye") end)
 Library:Unload()
+```
+
+### Animated accent
+
+The accent is fixed: it slowly breathes between grey and soft white, and it can't be changed. `Library:SetAccent` only prints a warning. You can tune the animation's speed or pause it:
+
+```lua
+Library.AccentAnimation.Period = 5      -- seconds per grey -> white -> grey cycle (default 3.5)
+Library.AccentAnimation.Enabled = false -- freeze on the current shade
 ```
 
 The colors live in `Library.Scheme`:
@@ -403,7 +411,9 @@ The colors live in `Library.Scheme`:
 | `MainColor` | `14, 14, 14` | Groupboxes, popups, notifications |
 | `SecondaryColor` | `19, 19, 19` | Buttons, inputs, tracks |
 | `OutlineColor` | `28, 28, 28` | Borders and lines |
-| `AccentColor` | `255, 151, 227` | Accent (Syde pink) |
+| `AccentColor` | animated | Current accent shade (read only, changes every frame) |
+| `AccentDark` | `135, 135, 135` | Darkest point of the accent animation |
+| `AccentLight` | `240, 240, 240` | Lightest point of the accent animation |
 | `FontColor` | `255, 255, 255` | Text |
 | `RedColor` | `255, 101, 104` | Risky elements |
 
