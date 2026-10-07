@@ -26,7 +26,7 @@ local Tabs = {
 	Visuals = Window:AddTab("Visuals", "eye", "Color pickers on labels"),
 }
 
--- Menu keybind, accent color, configs (save / load / autoload) and Unload are already
+-- Menu keybind, DPI scale, configs (save / load / autoload) and Unload are already
 -- in the settings panel: the gear icon in the top right corner. Nothing to build here.
 
 --// Main tab \\--
@@ -389,7 +389,7 @@ local Log = Console:AddLog("Log", {
 })
 
 Log:Log("Script loaded")
-Log:Log("Accent colored line", Library.Scheme.AccentColor)
+Log:Log("Custom colored line", Color3.fromRGB(150, 200, 255))
 Log:Log("Errors can be red", Color3.fromRGB(255, 101, 104))
 
 Console:AddButton({
