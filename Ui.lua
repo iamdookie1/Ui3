@@ -83,10 +83,9 @@ local Library = {
         ContainerColor = Color3.fromRGB(11, 11, 11),
         MainColor = Color3.fromRGB(14, 14, 14),
         SecondaryColor = Color3.fromRGB(19, 19, 19),
-        -- Fixed monochrome accent: it breathes between AccentDark and AccentLight (see AccentAnimation).
-        AccentColor = Color3.fromRGB(200, 200, 200),
-        AccentDark = Color3.fromRGB(135, 135, 135),
-        AccentLight = Color3.fromRGB(240, 240, 240),
+        -- Fixed monochrome accent. Accent fills show it at ~80% (grey) with a light sweeping
+        -- across them; strokes, text and icons use it as is (soft white). See ThemeAnimation.
+        AccentColor = Color3.fromRGB(225, 225, 225),
         OutlineColor = Color3.fromRGB(28, 28, 28),
         FontColor = Color3.fromRGB(255, 255, 255),
         Font = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium),
@@ -302,13 +301,29 @@ local function List(Parent, Gap, Properties)
     return New("UIListLayout", Props)
 end
 
--- Crisp replacement for image glows: a soft top-to-bottom sheen on accent fills.
+-- Accent fills get a gradient with one bright band in the middle. The theme animation slides
+-- that band across them (see ThemeAnimation). The rest of the gradient dims the fill to ~80%,
+-- so on dark fills (a switch that's off) the band is invisible and only accent fills shine.
+local ShineBase = Color3.fromRGB(205, 205, 205)
+local ShineSequence = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, ShineBase),
+    ColorSequenceKeypoint.new(0.36, ShineBase),
+    ColorSequenceKeypoint.new(0.5, Color3.new(1, 1, 1)),
+    ColorSequenceKeypoint.new(0.64, ShineBase),
+    ColorSequenceKeypoint.new(1, ShineBase),
+})
+
+Library.ShineGradients = {}
+
 local function Sheen(Parent)
-    return New("UIGradient", {
-        Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(200, 200, 200)),
-        Rotation = 90,
+    local Gradient = New("UIGradient", {
+        Color = ShineSequence,
+        Offset = Vector2.new(-2, 0), -- parked off to the left until the light passes
+        Rotation = 20,
         Parent = Parent,
     })
+    table.insert(Library.ShineGradients, Gradient)
+    return Gradient
 end
 
 local function MakeLine(Props)
@@ -364,47 +379,24 @@ end
 
 -- The accent is part of the theme and can't be changed; kept so old scripts don't error.
 function Library:SetAccent()
-    warn("[Ui3] The accent color is fixed (animated black and white) and can't be changed.")
+    warn("[Ui3] The accent color is fixed (black and white) and can't be changed.")
 end
 
--- Pushes a new accent shade to everything bound to "AccentColor", without rerunning element updaters.
-local function ApplyAccent(Color)
-    Library.Scheme.AccentColor = Color
-    for Object, Properties in Library.Registry do
-        for Property, Value in Properties do
-            if Value == "AccentColor" then
-                Object[Property] = Color
-            end
-        end
-    end
-end
-Library.ApplyAccent = ApplyAccent
-
---// Animated theme: the accent slowly breathes between grey and soft white \\--
-Library.AccentAnimation = {
+--// Theme animation settings \\--
+Library.ThemeAnimation = {
     Enabled = true,
-    Period = 3.5, -- seconds for a full grey -> white -> grey cycle
-    Rate = 30, -- updates per second
+
+    -- A light sweeps left to right across the screen, shining over every accent fill it passes.
+    Shine = true,
+    ShinePeriod = 4.5, -- seconds between sweeps
+    ShineDuration = 2.2, -- seconds one sweep takes to cross the screen
+
+    -- A light travels around the window's border.
+    BorderLight = true,
+    BorderPeriod = 6, -- seconds per lap
 }
-
-do
-    local LastStep = 0
-    Library:GiveSignal(RunService.Heartbeat:Connect(function()
-        local Animation = Library.AccentAnimation
-        if not Animation.Enabled or Library.Unloaded then
-            return
-        end
-
-        local Now = os.clock()
-        if Now - LastStep < 1 / Animation.Rate then
-            return
-        end
-        LastStep = Now
-
-        local Alpha = (math.sin(Now / Animation.Period * math.pi * 2) + 1) / 2
-        ApplyAccent(Library.Scheme.AccentDark:Lerp(Library.Scheme.AccentLight, Alpha))
-    end))
-end
+-- Old name, so scripts that paused the previous animation still work.
+Library.AccentAnimation = Library.ThemeAnimation
 
 function Library:SetFont(FontFace)
     if typeof(FontFace) == "EnumItem" then
@@ -506,6 +498,74 @@ local function GetScreenSize()
         Size = workspace.CurrentCamera.ViewportSize
     end
     return Size
+end
+
+--// Theme animation: shine sweep + border light \\--
+do
+    local Parked = false
+
+    local function StepShine(Now)
+        local Animation = Library.ThemeAnimation
+        local Progress = (Now % Animation.ShinePeriod) / Animation.ShineDuration
+
+        -- Between sweeps every band waits off to the side; park them once, then do nothing.
+        if Progress > 1 then
+            if not Parked then
+                Parked = true
+                for _, Gradient in Library.ShineGradients do
+                    Gradient.Offset = Vector2.new(-2, 0)
+                end
+            end
+            return
+        end
+        Parked = false
+
+        -- One light position in screen pixels; each fill places its band relative to itself,
+        -- so it reads as a single light passing over the whole UI.
+        local Screen = GetScreenSize().X
+        local SweepX = -200 + (Screen + 400) * Progress
+
+        local Index = 1
+        local Gradients = Library.ShineGradients
+        while Index <= #Gradients do
+            local Gradient = Gradients[Index]
+            local Parent = Gradient.Parent
+            if Parent == nil then
+                -- Destroyed with its element (dropdown rows, notifications...).
+                table.remove(Gradients, Index)
+            else
+                local Width = math.max(Parent.AbsoluteSize.X, 1)
+                Gradient.Offset = Vector2.new((SweepX - Parent.AbsolutePosition.X) / Width - 0.5, 0)
+                Index += 1
+            end
+        end
+    end
+
+    Library:GiveSignal(RunService.Heartbeat:Connect(function()
+        local Animation = Library.ThemeAnimation
+        if Library.Unloaded or not Animation.Enabled then
+            return
+        end
+
+        local Now = os.clock()
+
+        if Animation.Shine then
+            StepShine(Now)
+        elseif not Parked then
+            Parked = true
+            for _, Gradient in Library.ShineGradients do
+                Gradient.Offset = Vector2.new(-2, 0)
+            end
+        end
+
+        local Border = Library.Window and Library.Window.BorderGradient
+        if Border then
+            Border.Parent.Enabled = Animation.BorderLight
+            if Animation.BorderLight and Library.Toggled then
+                Border.Rotation = (Now / Animation.BorderPeriod * 360) % 360
+            end
+        end
+    end))
 end
 
 --// Tooltips \\--
@@ -4155,6 +4215,31 @@ function Library:CreateWindow(WindowInfo)
     Corner(Main, WindowInfo.CornerRadius)
     Stroke(Main)
 
+    -- Border light: a second, see-through outline on top of the window border. A rotating
+    -- gradient makes one stretch of it bright, so a light travels around the frame.
+    local BorderLight = New("Frame", {
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 2,
+        Parent = Root,
+    })
+    Corner(BorderLight, WindowInfo.CornerRadius)
+    local BorderStroke = New("UIStroke", {
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        Color = "AccentColor",
+        Thickness = 1.2,
+        Parent = BorderLight,
+    })
+    local BorderGradient = New("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.72, 1),
+            NumberSequenceKeypoint.new(0.94, 0.05),
+            NumberSequenceKeypoint.new(1, 0.25),
+        }),
+        Parent = BorderStroke,
+    })
+
     -- A visible Modal button frees the mouse in first person while the UI is open.
     New("TextButton", {
         BackgroundTransparency = 1,
@@ -4351,6 +4436,7 @@ function Library:CreateWindow(WindowInfo)
 
     Window.Root = Root
     Window.Main = Main
+    Window.BorderGradient = BorderGradient
     Window.Scale = Scale
     Window.Container = Container
     Library.Window = Window
@@ -4405,7 +4491,6 @@ function Library:CreateWindow(WindowInfo)
             Parent = TabButton,
         })
         Corner(Indicator, UDim.new(1, 0))
-        Sheen(Indicator)
 
         local TabIcon
         local IconData = Library:GetIcon(Icon)

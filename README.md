@@ -1,6 +1,6 @@
 # Ui3
 
-A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and an **animated black-and-white accent** that slowly breathes between grey and soft white.
+A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and an **animated black-and-white theme**: a light shines across accent fills and another runs around the window border.
 
 If you've used Obsidian (or Linoria), you already know how to use this. Most scripts carry over with few or no changes.
 
@@ -15,7 +15,7 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 - **Configs** that save, load and **autoload**, applied as each element is created, so they work even if your script creates elements late
 - **DPI scaling** from 50% to 200%, saved in configs
 - While you drag a slider, color picker or the window, every other element ignores hovers and clicks
-- An animated monochrome theme: every accent element (toggles, sliders, icons, indicators) pulses together
+- An animated black-and-white theme: a light sweeps across accent fills and another travels around the window border
 
 ## Quick start
 
@@ -118,7 +118,7 @@ local Big = Tab:AddBigGroupbox({ Name = "Overview", Description = "Optional", Ic
 -- or Tab:AddBigGroupbox("Overview", "gauge")
 ```
 
-Icons are [lucide](https://lucide.dev/) names, or a Roblox asset id for a custom image. Lucide icons are tinted with the animated accent.
+Icons are [lucide](https://lucide.dev/) names, or a Roblox asset id for a custom image. Lucide icons are tinted with the accent.
 
 ## Elements
 
@@ -393,13 +393,23 @@ Library:OnUnload(function() print("bye") end)
 Library:Unload()
 ```
 
-### Animated accent
+### Theme animation
 
-The accent is fixed: it slowly breathes between grey and soft white, and it can't be changed. `Library:SetAccent` only prints a warning. You can tune the animation's speed or pause it:
+The accent is a fixed light grey and can't be changed (`Library:SetAccent` only prints a warning). Two animations bring it to life:
+
+- **Shine:** every few seconds a light sweeps left to right across the screen. Each accent fill it passes (switches that are on, slider and progress fills, checked boxes, notification timers) gets a bright band sliding through it.
+- **Border light:** a light slowly travels around the window's outline.
+
+Both can be tuned or turned off:
 
 ```lua
-Library.AccentAnimation.Period = 5      -- seconds per grey -> white -> grey cycle (default 3.5)
-Library.AccentAnimation.Enabled = false -- freeze on the current shade
+Library.ThemeAnimation.ShinePeriod = 4.5    -- seconds between sweeps
+Library.ThemeAnimation.ShineDuration = 2.2  -- seconds one sweep takes to cross the screen
+Library.ThemeAnimation.BorderPeriod = 6     -- seconds per lap around the window
+
+Library.ThemeAnimation.Shine = false        -- turn off the shine
+Library.ThemeAnimation.BorderLight = false  -- turn off the border light
+Library.ThemeAnimation.Enabled = false      -- stop both
 ```
 
 The colors live in `Library.Scheme`:
@@ -411,9 +421,7 @@ The colors live in `Library.Scheme`:
 | `MainColor` | `14, 14, 14` | Groupboxes, popups, notifications |
 | `SecondaryColor` | `19, 19, 19` | Buttons, inputs, tracks |
 | `OutlineColor` | `28, 28, 28` | Borders and lines |
-| `AccentColor` | animated | Current accent shade (read only, changes every frame) |
-| `AccentDark` | `135, 135, 135` | Darkest point of the accent animation |
-| `AccentLight` | `240, 240, 240` | Lightest point of the accent animation |
+| `AccentColor` | `225, 225, 225` | Accent (fixed). Fills show it at ~80%, so they read as grey with a white shine |
 | `FontColor` | `255, 255, 255` | Text |
 | `RedColor` | `255, 101, 104` | Risky elements |
 
