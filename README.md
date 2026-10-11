@@ -388,6 +388,7 @@ Each of these returns `success, errorMessage`. Configs need an executor with fil
 ```lua
 Library:SetFont(Enum.Font.Gotham)
 Library:SetDPIScale(125)                           -- 50 to 200, like Obsidian
+Library:SetTransparency({ Groupbox = 0.25, Element = 0.12 }) -- 0 = solid, 1 = invisible
 
 Library:Toggle()        -- show or hide the window
 Library:Toggle(true)
@@ -395,6 +396,10 @@ Library:Toggle(true)
 Library:OnUnload(function() print("bye") end)
 Library:Unload()
 ```
+
+### Transparency
+
+Groupboxes are a little see-through (25%) so the theme shows behind them. Elements on them are more solid (12%): buttons, inputs, dropdowns, slider and progress tracks, switches and checkboxes while off, keybind chips, stat cards, the log and the selected tab. Accent fills (a switch that's on, slider fills, ticked boxes) stay solid so they pop. Popups and notifications stay solid so they're readable over the game. Change the levels live with `Library:SetTransparency`.
 
 ### Themes
 

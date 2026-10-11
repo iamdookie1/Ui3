@@ -72,6 +72,14 @@ local Library = {
     ToggleKeybind = Enum.KeyCode.RightControl,
     CornerRadius = 8,
 
+    -- Background transparency by role, so the theme shows through. Groupboxes are a little
+    -- see-through; elements on them are more solid. See Library:SetTransparency.
+    Transparency = {
+        Groupbox = 0.25,
+        Element = 0.12,
+    },
+    TransparencyRegistry = {},
+
     -- DPI scaling (like Obsidian): every top level piece of UI has a UIScale in Library.Scales.
     DPIScale = 1,
     Scales = {},
@@ -217,6 +225,17 @@ local function Register(Object, Property, Value)
     Library.Registry[Object][Property] = Value
 end
 
+-- Objects tagged with a role take their BackgroundTransparency from Library.Transparency.
+local function SetTransparencyRole(Object, Role)
+    if Library.TransparencyRegistry[Object] == nil then
+        Object.Destroying:Connect(function()
+            Library.TransparencyRegistry[Object] = nil
+        end)
+    end
+    Library.TransparencyRegistry[Object] = Role
+    Object.BackgroundTransparency = Library.Transparency[Role] or 0
+end
+
 local function New(ClassName, Properties)
     local Object = Instance.new(ClassName)
 
@@ -230,6 +249,8 @@ local function New(ClassName, Properties)
 
     local Parent = Merged.Parent
     Merged.Parent = nil
+    local TransparencyRole = Merged.TransparencyRole
+    Merged.TransparencyRole = nil
 
     for Key, Value in Merged do
         if IsThemed(Key, Value) then
@@ -238,6 +259,10 @@ local function New(ClassName, Properties)
         else
             Object[Key] = Value
         end
+    end
+
+    if TransparencyRole then
+        SetTransparencyRole(Object, TransparencyRole)
     end
 
     if Parent then
@@ -754,6 +779,21 @@ do
             end
         end
     end))
+end
+
+-- Library:SetTransparency({ Groupbox = 0.25, Element = 0.12 }) — 0 is solid, 1 is invisible.
+function Library:SetTransparency(Values)
+    for Role, Value in Values do
+        if Library.Transparency[Role] ~= nil and tonumber(Value) then
+            Library.Transparency[Role] = math.clamp(tonumber(Value), 0, 1)
+        end
+    end
+    for Object, Role in Library.TransparencyRegistry do
+        Object.BackgroundTransparency = Library.Transparency[Role] or 0
+    end
+    for _, Updater in Library.Updaters do
+        Updater()
+    end
 end
 
 function Library:SetFont(FontFace)
@@ -1923,6 +1963,7 @@ function Funcs:AddKeyPicker(Idx, Info)
     local Button = New("TextButton", {
         AutomaticSize = Enum.AutomaticSize.X,
         BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
         Size = UDim2.fromOffset(0, 18),
         Text = "",
         TextSize = 12,
@@ -2345,7 +2386,9 @@ local function BuildToggle(Groupbox, Idx, Info, Variant)
             end
         end
 
-        Box.BackgroundTransparency = Toggle.Disabled and 0.6 or 0
+        -- Off: see-through like other elements. On: solid so the accent pops.
+        local Fill = if On then 0 else Library.Transparency.Element
+        Box.BackgroundTransparency = if Toggle.Disabled then math.max(0.6, Fill) else Fill
         BoxStroke.Transparency = Toggle.Disabled and 0.6 or 0
     end
 
@@ -2469,6 +2512,7 @@ function Funcs:AddButton(...)
 
         local Base = New("TextButton", {
             BackgroundColor3 = "SecondaryColor",
+            TransparencyRole = "Element",
             ClipsDescendants = true,
             Size = UDim2.fromScale(1, 1),
             Visible = Button.Visible,
@@ -2690,6 +2734,7 @@ function Funcs:AddInput(Idx, Info)
 
     local Box = New("TextBox", {
         BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
         ClearTextOnFocus = Info.ClearTextOnFocus,
         LayoutOrder = 1,
         PlaceholderText = Info.Placeholder,
@@ -2860,6 +2905,7 @@ function Funcs:AddSlider(Idx, Info)
 
     local Track = New("Frame", {
         BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
         Position = UDim2.fromOffset(0, 5),
         Size = UDim2.new(1, 0, 0, 6),
         Parent = Bar,
@@ -3165,6 +3211,7 @@ function Funcs:AddDropdown(Idx, Info)
 
     local Box = New("TextButton", {
         BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
         LayoutOrder = 1,
         Size = UDim2.new(1, 0, 0, 30),
         Parent = Holder,
@@ -3790,6 +3837,7 @@ function Funcs:AddProgressBar(Idx, Info)
     local Track = New("Frame", {
         AnchorPoint = Vector2.new(0, 1),
         BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
         ClipsDescendants = true,
         Position = UDim2.fromScale(0, 1),
         Size = UDim2.new(1, 0, 0, 12),
@@ -3884,6 +3932,7 @@ function Funcs:AddStatCards(Idx, Info)
     function StatCards:AddCard(Card)
         local Frame = New("Frame", {
             BackgroundColor3 = "SecondaryColor",
+            TransparencyRole = "Element",
             LayoutOrder = #StatCards.Cards + 1,
             Size = UDim2.fromScale(1, 1),
             Parent = Holder,
@@ -3994,6 +4043,7 @@ function Funcs:AddLog(Idx, Info)
     local Console = RegisterScroll(New("ScrollingFrame", {
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
         BackgroundTransparency = 0,
         CanvasSize = UDim2.fromScale(0, 0),
         LayoutOrder = 1,
@@ -4065,6 +4115,7 @@ local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
     local Box = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = "MainColor",
+        TransparencyRole = "Groupbox",
         LayoutOrder = LayoutOrder or 0,
         Size = UDim2.fromScale(1, 0),
         Parent = Parent,
@@ -4492,6 +4543,7 @@ function Library:Unload()
     table.clear(Library.Registry)
     table.clear(Library.Updaters)
     table.clear(Library.ScrollFrames)
+    table.clear(Library.TransparencyRegistry)
     table.clear(Library.PendingConfig)
     table.clear(Library.Nebulas)
     table.clear(Library.ThemeHooks)
@@ -4729,7 +4781,7 @@ function Library:CreateWindow(WindowInfo)
     local function ApplyWindowTheme(Theme, Instant)
         local HasNebula = Theme.Colors ~= nil
         local NebulaTarget = if HasNebula then (Theme.NebulaTransparency or 0.62) else 1
-        local ContainerTarget = if HasNebula then 0.3 else 0
+        local ContainerTarget = if HasNebula then 0.6 else 0
         local ShadowTarget = if HasNebula then 0.45 else 0.25
 
         if Instant then
@@ -5014,9 +5066,15 @@ function Library:CreateWindow(WindowInfo)
         Tab.Button = TabButton
         Tab.Container = Page
 
+        table.insert(Library.Updaters, function()
+            if Library.ActiveTab == Tab then
+                TabButton.BackgroundTransparency = Library.Transparency.Element
+            end
+        end)
+
         function Tab:SetSelected(Selected)
             local TweenData = Library.TweenInfo
-            Tween(TabButton, TweenData, { BackgroundTransparency = Selected and 0 or 1 })
+            Tween(TabButton, TweenData, { BackgroundTransparency = Selected and Library.Transparency.Element or 1 })
             Tween(ButtonStroke, TweenData, { Transparency = Selected and 0 or 1 })
             Tween(TabLabel, TweenData, { TextTransparency = Selected and 0 or 0.5 })
             Tween(Indicator, TweenData, {
