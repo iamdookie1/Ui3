@@ -1,6 +1,6 @@
 # Ui3
 
-A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and an **animated black-and-white theme**: a light shines across accent fills and another runs around the window border.
+A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and **animated themes**: black-and-white Monochrome plus six nebula themes with drifting clouds and twinkling stars.
 
 If you've used Obsidian (or Linoria), you already know how to use this. Most scripts carry over with few or no changes.
 
@@ -11,11 +11,12 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 - Color pickers and keybind pickers that attach to toggles and labels
 - Big groupbox only: progress bars, stat cards and a log console
 - Notifications and tooltips
-- A built-in **settings panel** (gear icon, top right) with menu keybind, DPI scale, configs and unload
+- A built-in **settings panel** (gear icon, top right) with menu keybind, DPI scale, themes, configs and unload
 - **Configs** that save, load and **autoload**, applied as each element is created, so they work even if your script creates elements late
 - **DPI scaling** from 50% to 200%, saved in configs
 - While you drag a slider, color picker or the window, every other element ignores hovers and clicks
-- An animated black-and-white theme: a light sweeps across accent fills and another travels around the window border
+- **7 animated themes**: Monochrome, Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
+- A light sweeps across accent fills and another travels around the window border
 
 ## Quick start
 
@@ -85,6 +86,7 @@ local Window = Library:CreateWindow({
 	CornerRadius = 10,
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	DPIScale = nil,             -- starting DPI in percent, e.g. 125
+	Theme = nil,                -- starting theme, e.g. "Violet" (players can change it in settings)
 	ShowSettings = true,        -- the gear icon and settings panel
 	ConfigFolder = nil,         -- defaults to "Ui3/<Title>"
 	AutoLoad = true,            -- load the autoload config on start
@@ -346,6 +348,7 @@ Notification:Destroy()
 The gear icon in the top right opens a panel that every script gets for free:
 
 - **Menu:** menu keybind and DPI scale
+- **Theme:** a grid of live, animated theme cards. Click one to switch
 - **Configs:** create, load, overwrite, delete, refresh, set autoload, reset autoload
 - **Script:** unload
 
@@ -358,7 +361,7 @@ Extra:AddToggle("Watermark", { Text = "Show watermark" })
 
 ## Configs
 
-Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, color pickers, keybinds, inputs, and the menu keybind and DPI from settings.
+Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, color pickers, keybinds, inputs, and the menu keybind, DPI and theme from settings.
 
 Autoload applies saved values the moment each element is created. That way it works even if your script creates elements after a wait. Loading a value runs that element's callback, so features turn back on.
 
@@ -393,9 +396,41 @@ Library:OnUnload(function() print("bye") end)
 Library:Unload()
 ```
 
+### Themes
+
+Players pick a theme from the **Theme** section of the settings panel. Each option is a live preview card, and the choice is saved in configs. The themes are:
+
+| Theme | Look |
+| --- | --- |
+| `Monochrome` | Default. Black and white, no nebula |
+| `Violet` | Deep purple nebula, lilac accent |
+| `Ocean` | Navy nebula, sky blue accent |
+| `Magenta` | Plum nebula, hot pink accent |
+| `Emerald` | Deep green nebula, mint accent |
+| `Ember` | Dark red nebula, orange accent |
+| `Aurora` | Teal and gold nebula, cyan accent |
+
+A nebula theme recolors the whole UI from its four colors, turns the window shadow into a colored glow, and adds slowly drifting clouds and twinkling stars behind the window. Switching themes cross-fades. The nebula themes recreate the animated buttons from [website5](https://github.com/iamdookie1/website5), using the same colors, drift keyframes, timings and star positions.
+
+```lua
+Library:SetTheme("Ocean")
+print(Library.CurrentTheme.Name)
+print(Library:GetThemes())
+
+-- Your own nebula theme (shows up in the settings grid if added before CreateWindow)
+Library:AddTheme({
+	Name = "Sunset",
+	Colors = { Color3.fromHex("#5a1040"), Color3.fromHex("#ff6b4a"), Color3.fromHex("#ffd3a1"), Color3.fromHex("#1a0612") },
+	Glow = Color3.fromRGB(255, 120, 90),
+	Duration = 15, -- seconds per drift
+})
+```
+
+The accent always comes from the theme, so `Library:SetAccent` only prints a warning.
+
 ### Theme animation
 
-The accent is a fixed light grey and can't be changed (`Library:SetAccent` only prints a warning). Two animations bring it to life:
+Besides the nebula, two lights animate the accent:
 
 - **Shine:** every few seconds a light sweeps left to right across the screen. Each accent fill it passes (switches that are on, slider and progress fills, checked boxes, notification timers) gets a bright band sliding through it.
 - **Border light:** a light slowly travels around the window's outline.
@@ -409,10 +444,11 @@ Library.ThemeAnimation.BorderPeriod = 6     -- seconds per lap around the window
 
 Library.ThemeAnimation.Shine = false        -- turn off the shine
 Library.ThemeAnimation.BorderLight = false  -- turn off the border light
-Library.ThemeAnimation.Enabled = false      -- stop both
+Library.ThemeAnimation.Nebula = false       -- freeze the nebula clouds and stars
+Library.ThemeAnimation.Enabled = false      -- stop all of them
 ```
 
-The colors live in `Library.Scheme`:
+The current colors live in `Library.Scheme`. The defaults below are Monochrome's; themes replace them:
 
 | Key | Default | Used for |
 | --- | --- | --- |
@@ -421,11 +457,12 @@ The colors live in `Library.Scheme`:
 | `MainColor` | `14, 14, 14` | Groupboxes, popups, notifications |
 | `SecondaryColor` | `19, 19, 19` | Buttons, inputs, tracks |
 | `OutlineColor` | `28, 28, 28` | Borders and lines |
-| `AccentColor` | `225, 225, 225` | Accent (fixed). Fills show it at ~80%, so they read as grey with a white shine |
+| `AccentColor` | `225, 225, 225` | Accent. Fills show it at ~80%, with a white shine passing over them |
+| `ShadowColor` | `0, 0, 0` | Window shadow (a colored glow in nebula themes) |
 | `FontColor` | `255, 255, 255` | Text |
 | `RedColor` | `255, 101, 104` | Risky elements |
 
-After changing values in `Library.Scheme` directly, call `Library:UpdateColorsUsingRegistry()` to apply them.
+After changing values in `Library.Scheme` directly, call `Library:UpdateColorsUsingRegistry()` to apply them. Picking a theme overwrites them again.
 
 ## Credits
 

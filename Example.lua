@@ -16,6 +16,7 @@ local Window = Library:CreateWindow({
 	Resizable = true,
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	-- DPIScale = 100, -- starting DPI in percent; players can change it in settings (saved in configs)
+	-- Theme = "Violet", -- starting theme: Monochrome, Violet, Ocean, Magenta, Emerald, Ember, Aurora
 })
 
 -- Window:AddTab(Name, Icon, Description)
@@ -26,7 +27,7 @@ local Tabs = {
 	Visuals = Window:AddTab("Visuals", "eye", "Color pickers on labels"),
 }
 
--- Menu keybind, DPI scale, configs (save / load / autoload) and Unload are already
+-- Menu keybind, DPI scale, themes, configs (save / load / autoload) and Unload are already
 -- in the settings panel: the gear icon in the top right corner. Nothing to build here.
 
 --// Main tab \\--

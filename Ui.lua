@@ -90,6 +90,7 @@ local Library = {
         FontColor = Color3.fromRGB(255, 255, 255),
         Font = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Medium),
 
+        ShadowColor = Color3.fromRGB(0, 0, 0), -- window shadow; themes turn it into a colored glow
         RedColor = Color3.fromRGB(255, 101, 104),
         DarkColor = Color3.fromRGB(0, 0, 0),
         WhiteColor = Color3.fromRGB(255, 255, 255),
@@ -379,7 +380,7 @@ end
 
 -- The accent is part of the theme and can't be changed; kept so old scripts don't error.
 function Library:SetAccent()
-    warn("[Ui3] The accent color is fixed (black and white) and can't be changed.")
+    warn("[Ui3] The accent comes from the theme. Use Library:SetTheme(Name) instead.")
 end
 
 --// Theme animation settings \\--
@@ -394,9 +395,366 @@ Library.ThemeAnimation = {
     -- A light travels around the window's border.
     BorderLight = true,
     BorderPeriod = 6, -- seconds per lap
+
+    -- Nebula themes: drifting gas clouds and twinkling stars.
+    Nebula = true,
 }
 -- Old name, so scripts that paused the previous animation still work.
 Library.AccentAnimation = Library.ThemeAnimation
+
+--// Themes \\--
+-- The nebula themes recreate the animated buttons from iamdookie1/website5: four colors
+-- (deep, vivid, light, background), a glow, and their own drift / twinkle timings.
+local function Hex(Value)
+    return Color3.fromHex(Value)
+end
+
+Library.Themes = {
+    {
+        Name = "Monochrome",
+        Scheme = {
+            BackgroundColor = Color3.fromRGB(9, 9, 9),
+            ContainerColor = Color3.fromRGB(11, 11, 11),
+            MainColor = Color3.fromRGB(14, 14, 14),
+            SecondaryColor = Color3.fromRGB(19, 19, 19),
+            OutlineColor = Color3.fromRGB(28, 28, 28),
+            AccentColor = Color3.fromRGB(225, 225, 225),
+            ShadowColor = Color3.fromRGB(0, 0, 0),
+        },
+        -- Only the settings card is a nebula; the window stays plain black and white.
+        PreviewColors = { Hex("#2b2b2b"), Hex("#8c8c8c"), Hex("#ececec"), Hex("#0b0b0b") },
+        Glow = Color3.fromRGB(200, 200, 200),
+        Duration = 16, Delay = -3, Twinkle = 3, TwinkleDelay = 0,
+    },
+    {
+        Name = "Violet",
+        Colors = { Hex("#3b0f8f"), Hex("#7a3cff"), Hex("#e0a8ff"), Hex("#12052e") },
+        Glow = Color3.fromRGB(150, 90, 255),
+        Duration = 14, Delay = 0, Twinkle = 3, TwinkleDelay = 0,
+    },
+    {
+        Name = "Ocean",
+        Colors = { Hex("#0a2a8f"), Hex("#1f7bff"), Hex("#8fe3ff"), Hex("#030b26") },
+        Glow = Color3.fromRGB(60, 150, 255),
+        Duration = 17, Delay = -4, Twinkle = 2.3, TwinkleDelay = -1,
+    },
+    {
+        Name = "Magenta",
+        Colors = { Hex("#7a0a5c"), Hex("#ff2fa8"), Hex("#ffb3e1"), Hex("#22041a") },
+        Glow = Color3.fromRGB(255, 60, 170),
+        Duration = 12, Delay = -7, Twinkle = 3.7, TwinkleDelay = 0,
+    },
+    {
+        Name = "Emerald",
+        Colors = { Hex("#04594a"), Hex("#12d18e"), Hex("#b4ffd9"), Hex("#021a14") },
+        Glow = Color3.fromRGB(30, 220, 150),
+        Duration = 19, Delay = -2, Twinkle = 2.3, TwinkleDelay = -1,
+    },
+    {
+        Name = "Ember",
+        Colors = { Hex("#8a1c05"), Hex("#ff5a1f"), Hex("#ffd08a"), Hex("#240702") },
+        Glow = Color3.fromRGB(255, 110, 40),
+        Duration = 15, Delay = -9, Twinkle = 3, TwinkleDelay = 0,
+    },
+    {
+        Name = "Aurora",
+        Colors = { Hex("#0b4f6c"), Hex("#f2b632"), Hex("#6ff7ff"), Hex("#04121c") },
+        Glow = Color3.fromRGB(120, 220, 230),
+        Accent = Hex("#6ff7ff"), -- the gold/cyan mix is muddy, cyan reads better
+        Duration = 13, Delay = -5, Twinkle = 3.7, TwinkleDelay = -1,
+    },
+}
+Library.CurrentTheme = Library.Themes[1]
+Library.ThemeHooks = {}
+
+function Library:GetTheme(Name)
+    for _, Theme in Library.Themes do
+        if Theme.Name:lower() == tostring(Name):lower() then
+            return Theme
+        end
+    end
+    return nil
+end
+
+function Library:GetThemes()
+    local Names = {}
+    for _, Theme in Library.Themes do
+        table.insert(Names, Theme.Name)
+    end
+    return Names
+end
+
+-- Turns a theme's four nebula colors into a full UI scheme.
+local function ThemeScheme(Theme)
+    if Theme.Scheme then
+        return Theme.Scheme
+    end
+
+    local Black = Color3.new(0, 0, 0)
+    local C1, C2, C3, C4 = Theme.Colors[1], Theme.Colors[2], Theme.Colors[3], Theme.Colors[4]
+    return {
+        BackgroundColor = C4:Lerp(Black, 0.45),
+        ContainerColor = C4:Lerp(Black, 0.3),
+        MainColor = C4:Lerp(Black, 0.12):Lerp(C1, 0.08),
+        SecondaryColor = C4:Lerp(C1, 0.2),
+        OutlineColor = C4:Lerp(C2, 0.22),
+        AccentColor = Theme.Accent or C2:Lerp(C3, 0.35),
+        ShadowColor = Theme.Glow or C2,
+    }
+end
+
+-- Theme = { Name, Colors = { deep, vivid, light, background }, Glow?, Accent?, Duration?, Delay?, Twinkle?, TwinkleDelay? }
+function Library:AddTheme(Theme)
+    assert(typeof(Theme) == "table" and typeof(Theme.Name) == "string", "AddTheme needs a Name")
+    assert(Theme.Scheme or (typeof(Theme.Colors) == "table" and #Theme.Colors == 4), "AddTheme needs 4 Colors")
+    Theme.Duration = Theme.Duration or 15
+    Theme.Delay = Theme.Delay or 0
+    Theme.Twinkle = Theme.Twinkle or 3
+    Theme.TwinkleDelay = Theme.TwinkleDelay or 0
+
+    for Index, Existing in Library.Themes do
+        if Existing.Name == Theme.Name then
+            Library.Themes[Index] = Theme
+            return Theme
+        end
+    end
+    table.insert(Library.Themes, Theme)
+    return Theme
+end
+
+local ThemeTransition = nil
+
+-- Instant applies straight away (used before the window is visible); otherwise the colors
+-- cross-fade over ~0.35s.
+function Library:SetTheme(Name, Instant)
+    local Theme = Library:GetTheme(Name)
+    if not Theme then
+        warn("[Ui3] Unknown theme '" .. tostring(Name) .. "'")
+        return false
+    end
+
+    Instant = Instant or not Library.Toggled
+    Library.CurrentTheme = Theme
+
+    local Target = ThemeScheme(Theme)
+    if Instant then
+        ThemeTransition = nil
+        for Key, Value in Target do
+            Library.Scheme[Key] = Value
+        end
+        Library:UpdateColorsUsingRegistry()
+    else
+        local From = {}
+        for Key in Target do
+            From[Key] = Library.Scheme[Key]
+        end
+        ThemeTransition = { From = From, To = Target, Start = os.clock(), Duration = 0.35 }
+    end
+
+    for _, Hook in Library.ThemeHooks do
+        Library:SafeCallback(Hook, Theme, Instant)
+    end
+    return true
+end
+
+--// Nebula renderer \\--
+-- Clouds are soft blobs (the shadow image with slices big enough to meet in the middle);
+-- layout, sizes, drift keyframes and stars are taken from the website's CSS. The ::before
+-- layer there is 220% of the button, so its percentages are converted to button units.
+local NebulaBlobs = { -- listed top to bottom, like the CSS background layers
+    { Color = 3, X = 0.06, Y = 0.28, W = 1.08, H = 0.77 },
+    { Color = 2, X = 0.94, Y = 0.72, W = 1.23, H = 0.92 },
+    { Color = 1, X = 0.50, Y = 0.06, W = 0.92, H = 1.08 },
+    { Color = 2, X = -0.05, Y = 1.05, W = 1.39, H = 0.77 },
+    { Color = 3, X = 1.16, Y = -0.05, W = 0.83, H = 0.66 },
+}
+
+-- translate (button units), rotate (degrees), scale
+local DriftKeys = {
+    { 0, 0, 0, 1 },
+    { -0.176, 0.132, 8, 1.1 },
+    { 0.132, -0.11, -6, 1.05 },
+}
+
+local PreviewStars = {
+    { 0.12, 0.22, 1 }, { 0.34, 0.70, 1 }, { 0.58, 0.18, 2 }, { 0.76, 0.62, 1 },
+    { 0.88, 0.30, 1 }, { 0.22, 0.85, 2 }, { 0.66, 0.88, 1 }, { 0.46, 0.45, 1 },
+}
+
+-- A wider, deterministic star field for the window background.
+local WindowStars = {}
+do
+    local Seed = 1337
+    local function Random()
+        Seed = (Seed * 1103515245 + 12345) % 2147483648
+        return Seed / 2147483648
+    end
+    for _ = 1, 28 do
+        table.insert(WindowStars, { Random(), Random(), Random() > 0.75 and 2 or 1 })
+    end
+end
+
+local function Smooth(T)
+    return T * T * (3 - 2 * T)
+end
+
+-- 0 -> 1 -> 0 over 2 * Duration, eased like CSS "ease-in-out ... alternate".
+local function PingPong(Now, Duration, Delay)
+    local T = (Now - Delay) % (Duration * 2)
+    return if T < Duration then T / Duration else 2 - T / Duration
+end
+
+Library.Nebulas = {}
+
+local function CreateNebula(Parent, Settings)
+    local Nebula = {
+        Parent = Parent,
+        Preview = Settings.Preview == true,
+        IsActive = Settings.IsActive,
+        Blobs = {},
+        Stars = {},
+        Theme = nil,
+    }
+
+    for Index, Spec in NebulaBlobs do
+        local Blob = New("ImageLabel", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Image = Assets.Shadow,
+            Position = UDim2.fromScale(Spec.X, Spec.Y),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(23, 23, 277, 277),
+            Size = UDim2.fromScale(Spec.W, Spec.H),
+            ZIndex = #NebulaBlobs - Index + 1,
+            Parent = Parent,
+        })
+        table.insert(Nebula.Blobs, { Image = Blob, Spec = Spec })
+    end
+
+    for Index, Star in Settings.Stars or {} do
+        local Dot = New("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0.4,
+            Position = UDim2.fromScale(Star[1], Star[2]),
+            Size = UDim2.fromOffset(Star[3], Star[3]),
+            ZIndex = #NebulaBlobs + 2,
+            Parent = Parent,
+        })
+        if Star[3] > 1 then
+            Corner(Dot, UDim.new(1, 0))
+        end
+        table.insert(Nebula.Stars, { Dot = Dot, Phase = Index * 0.37 })
+    end
+
+    function Nebula:SetTheme(Theme)
+        Nebula.Theme = Theme
+        local Colors = if Nebula.Preview then (Theme.PreviewColors or Theme.Colors) else Theme.Colors
+        if not Colors then
+            return
+        end
+        for _, Blob in Nebula.Blobs do
+            Blob.Image.ImageColor3 = Colors[Blob.Spec.Color]
+        end
+    end
+
+    function Nebula:Step(Now)
+        local Theme = Nebula.Theme
+        if not Theme then
+            return
+        end
+
+        -- Drift: k0 -> k1 -> k2 and back, each segment eased.
+        local U = PingPong(Now, Theme.Duration or 14, Theme.Delay or 0)
+        local A, B, S
+        if U < 0.5 then
+            A, B, S = DriftKeys[1], DriftKeys[2], Smooth(U / 0.5)
+        else
+            A, B, S = DriftKeys[2], DriftKeys[3], Smooth((U - 0.5) / 0.5)
+        end
+        local Dx = A[1] + (B[1] - A[1]) * S
+        local Dy = A[2] + (B[2] - A[2]) * S
+        local Angle = math.rad(A[3] + (B[3] - A[3]) * S)
+        local Scale = A[4] + (B[4] - A[4]) * S
+        local Cos, Sin = math.cos(Angle), math.sin(Angle)
+
+        -- Rotate in pixel space so the swirl isn't squashed on wide frames.
+        local Size = Parent.AbsoluteSize
+        local Width, Height = math.max(Size.X, 1), math.max(Size.Y, 1)
+        local Ratio = Width / Height
+        local Dpi = math.max(Library.DPIScale, 0.01)
+
+        for _, Blob in Nebula.Blobs do
+            local Spec = Blob.Spec
+            local X = (Spec.X - 0.5) * Ratio
+            local Y = Spec.Y - 0.5
+            local RX = (X * Cos - Y * Sin) * Scale
+            local RY = (X * Sin + Y * Cos) * Scale
+            Blob.Image.Position = UDim2.fromScale(0.5 + RX / Ratio + Dx, 0.5 + RY + Dy)
+            Blob.Image.Size = UDim2.fromScale(Spec.W * Scale, Spec.H * Scale)
+
+            -- Slices meet in the middle => the whole blob is soft falloff, like a radial gradient.
+            local Pixels = math.min(Spec.W * Scale * Width, Spec.H * Scale * Height) / Dpi
+            Blob.Image.SliceScale = math.max(0.2, Pixels / 46)
+        end
+
+        -- Twinkle: opacity 0.35 -> 1, with a small per-star offset.
+        local Twinkle = Theme.Twinkle or 3
+        for _, Star in Nebula.Stars do
+            local V = Smooth(PingPong(Now + Star.Phase, Twinkle, Theme.TwinkleDelay or 0))
+            Star.Dot.BackgroundTransparency = 1 - (0.35 + 0.65 * V)
+        end
+    end
+
+    Nebula:SetTheme(Settings.Theme or Library.CurrentTheme)
+    table.insert(Library.Nebulas, Nebula)
+    return Nebula
+end
+
+-- Drives theme cross-fades and every visible nebula at 30 updates per second.
+do
+    local LastStep = 0
+    Library:GiveSignal(RunService.Heartbeat:Connect(function()
+        if Library.Unloaded then
+            return
+        end
+        local Now = os.clock()
+        if Now - LastStep < 1 / 30 then
+            return
+        end
+        LastStep = Now
+
+        if ThemeTransition then
+            local Alpha = math.clamp((Now - ThemeTransition.Start) / ThemeTransition.Duration, 0, 1)
+            local Eased = Smooth(Alpha)
+            for Key, To in ThemeTransition.To do
+                Library.Scheme[Key] = ThemeTransition.From[Key]:Lerp(To, Eased)
+            end
+            Library:UpdateColorsUsingRegistry()
+            if Alpha >= 1 then
+                ThemeTransition = nil
+            end
+        end
+
+        local Animation = Library.ThemeAnimation
+        if not (Animation.Enabled and Animation.Nebula) then
+            return
+        end
+
+        local Index = 1
+        local Nebulas = Library.Nebulas
+        while Index <= #Nebulas do
+            local Nebula = Nebulas[Index]
+            if Nebula.Parent.Parent == nil then
+                table.remove(Nebulas, Index)
+            else
+                if Nebula.IsActive == nil or Nebula.IsActive() then
+                    Nebula:Step(Now)
+                end
+                Index += 1
+            end
+        end
+    end))
+end
 
 function Library:SetFont(FontFace)
     if typeof(FontFace) == "EnumItem" then
@@ -3878,6 +4236,8 @@ function Library:GetConfigData()
             table.insert(Objects, { type = "KeyPicker", idx = Idx, key = Option.Value, mode = Option.Mode })
         elseif Option.Type == "Input" then
             table.insert(Objects, { type = "Input", idx = Idx, text = Option.Value })
+        elseif Option.Type == "ThemePicker" then
+            table.insert(Objects, { type = "ThemePicker", idx = Idx, value = Option.Value })
         end
     end
 
@@ -3907,6 +4267,8 @@ function Library:ApplyConfigEntry(Entry)
             Object:SetValue({ Entry.key, Entry.mode })
         elseif Entry.type == "Input" then
             Object:SetValue(Entry.text)
+        elseif Entry.type == "ThemePicker" then
+            Object:SetValue(Entry.value)
         end
     end)
 
@@ -4131,6 +4493,8 @@ function Library:Unload()
     table.clear(Library.Updaters)
     table.clear(Library.ScrollFrames)
     table.clear(Library.PendingConfig)
+    table.clear(Library.Nebulas)
+    table.clear(Library.ThemeHooks)
     ScreenGui:Destroy()
 end
 
@@ -4159,6 +4523,9 @@ function Library:CreateWindow(WindowInfo)
 
     if WindowInfo.DPIScale then
         Library:SetDPIScale(WindowInfo.DPIScale)
+    end
+    if WindowInfo.Theme then
+        Library:SetTheme(WindowInfo.Theme, true)
     end
 
     local SidebarWidth = WindowInfo.SidebarWidth
@@ -4192,10 +4559,10 @@ function Library:CreateWindow(WindowInfo)
     })
     local Scale = NewScale(Root)
 
-    New("ImageLabel", {
+    local WindowShadow = New("ImageLabel", {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Image = Assets.Shadow,
-        ImageColor3 = "DarkColor",
+        ImageColor3 = "ShadowColor",
         ImageTransparency = 0.25,
         Position = UDim2.fromScale(0.5, 0.5),
         ScaleType = Enum.ScaleType.Slice,
@@ -4214,6 +4581,24 @@ function Library:CreateWindow(WindowInfo)
     })
     Corner(Main, WindowInfo.CornerRadius)
     Stroke(Main)
+
+    -- Nebula backdrop for nebula themes. A CanvasGroup so the clouds clip to the rounded
+    -- corners; it holds no UI, so its render resolution doesn't matter.
+    local NebulaLayer = New("CanvasGroup", {
+        BackgroundTransparency = 1,
+        GroupTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+        ZIndex = 0,
+        Parent = Main,
+    })
+    Corner(NebulaLayer, WindowInfo.CornerRadius)
+    local WindowNebula = CreateNebula(NebulaLayer, {
+        Stars = WindowStars,
+        IsActive = function()
+            return Library.Toggled and NebulaLayer.Visible
+        end,
+    })
 
     -- Border light: a second, see-through outline on top of the window border. A rotating
     -- gradient makes one stretch of it bright, so a light travels around the frame.
@@ -4339,6 +4724,52 @@ function Library:CreateWindow(WindowInfo)
         Parent = Main,
     })
 
+    -- Nebula themes: clouds drift behind the window (content area slightly see-through) and
+    -- the shadow becomes a colored glow. Monochrome hides the nebula.
+    local function ApplyWindowTheme(Theme, Instant)
+        local HasNebula = Theme.Colors ~= nil
+        local NebulaTarget = if HasNebula then (Theme.NebulaTransparency or 0.62) else 1
+        local ContainerTarget = if HasNebula then 0.3 else 0
+        local ShadowTarget = if HasNebula then 0.45 else 0.25
+
+        if Instant then
+            if HasNebula then
+                WindowNebula:SetTheme(Theme)
+            end
+            NebulaLayer.Visible = HasNebula
+            NebulaLayer.GroupTransparency = NebulaTarget
+            Container.BackgroundTransparency = ContainerTarget
+            WindowShadow.ImageTransparency = ShadowTarget
+            return
+        end
+
+        Tween(Container, Library.TweenInfo, { BackgroundTransparency = ContainerTarget })
+        Tween(WindowShadow, Library.TweenInfo, { ImageTransparency = ShadowTarget })
+
+        if NebulaLayer.Visible then
+            -- Fade the old clouds out, swap colors, fade the new ones in.
+            local Out = Tween(NebulaLayer, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { GroupTransparency = 1 })
+            Out.Completed:Connect(function()
+                if Library.CurrentTheme ~= Theme then
+                    return
+                end
+                if HasNebula then
+                    WindowNebula:SetTheme(Theme)
+                    Tween(NebulaLayer, TweenInfo.new(0.5, Enum.EasingStyle.Quad), { GroupTransparency = NebulaTarget })
+                else
+                    NebulaLayer.Visible = false
+                end
+            end)
+        elseif HasNebula then
+            WindowNebula:SetTheme(Theme)
+            NebulaLayer.GroupTransparency = 1
+            NebulaLayer.Visible = true
+            Tween(NebulaLayer, TweenInfo.new(0.5, Enum.EasingStyle.Quad), { GroupTransparency = NebulaTarget })
+        end
+    end
+    table.insert(Library.ThemeHooks, ApplyWindowTheme)
+    ApplyWindowTheme(Library.CurrentTheme, true)
+
     --// Bottom bar \\--
     MakeLine({
         AnchorPoint = Vector2.new(0, 1),
@@ -4437,6 +4868,7 @@ function Library:CreateWindow(WindowInfo)
     Window.Root = Root
     Window.Main = Main
     Window.BorderGradient = BorderGradient
+    Window.NebulaLayer = NebulaLayer
     Window.Scale = Scale
     Window.Container = Container
     Library.Window = Window
@@ -4807,6 +5239,10 @@ function Library:CreateWindow(WindowInfo)
     Padding(PanelScroll, 10, 10, 10, 10)
     List(PanelScroll, 10)
 
+    function Window:IsSettingsOpen()
+        return SettingsOpen
+    end
+
     function Window:SetSettingsOpen(Open)
         if Open == SettingsOpen then
             return
@@ -5058,6 +5494,155 @@ function Library:CreateWindow(WindowInfo)
             ConfigList:SetValue(Library.LoadedAutoload)
         end
     end
+
+    --// Theme picker: a grid of live nebula cards \\--
+    local ThemeBox = Window:AddSettingsGroupbox("Theme", "palette")
+
+    local Grid = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = ThemeBox.Container,
+    })
+    New("UIGridLayout", {
+        CellPadding = UDim2.fromOffset(10, 12),
+        CellSize = UDim2.new(0.5, -5, 0, 40),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = Grid,
+    })
+
+    local ThemePicker = {
+        Type = "ThemePicker",
+        Value = Library.CurrentTheme.Name,
+        Changed = nil,
+        Cards = {},
+    }
+
+    local function RefreshCards()
+        for Name, Card in ThemePicker.Cards do
+            local Selected = Name == ThemePicker.Value
+            Tween(Card.Stroke, Library.FastTweenInfo, {
+                Thickness = Selected and 1.6 or 1,
+                Transparency = Selected and 0 or (Card.Hovered and 0.55 or 0.82),
+            })
+        end
+    end
+
+    local function BuildCard(Theme, Order)
+        local Cell = New("TextButton", {
+            BackgroundTransparency = 1,
+            LayoutOrder = Order,
+            Parent = Grid,
+        })
+
+        -- Inner moves on hover (the grid owns the cell's position).
+        local Inner = New("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            Parent = Cell,
+        })
+
+        local Glow = New("ImageLabel", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Image = Assets.Shadow,
+            ImageColor3 = Theme.Glow or Color3.new(1, 1, 1),
+            ImageTransparency = 0.6,
+            Position = UDim2.fromScale(0.5, 0.5),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(23, 23, 277, 277),
+            Size = UDim2.new(1, 22, 1, 22),
+            ZIndex = 1,
+            Parent = Inner,
+        })
+
+        local Colors = Theme.PreviewColors or Theme.Colors
+        local Canvas = New("CanvasGroup", {
+            BackgroundColor3 = Colors[4],
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = 2,
+            Parent = Inner,
+        })
+        Corner(Canvas, 10)
+        CreateNebula(Canvas, {
+            Theme = Theme,
+            Preview = true,
+            Stars = PreviewStars,
+            IsActive = function()
+                return Library.Toggled and SettingsOpen
+            end,
+        })
+
+        local Border = New("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = 3,
+            Parent = Inner,
+        })
+        Corner(Border, 10)
+        local BorderStroke = New("UIStroke", {
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = Color3.new(1, 1, 1),
+            Transparency = 0.82,
+            Parent = Border,
+        })
+
+        -- Outside the CanvasGroup so the text stays crisp.
+        New("TextLabel", {
+            FontFace = SemiBold,
+            Size = UDim2.fromScale(1, 1),
+            Text = Theme.Name,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextSize = 13,
+            TextStrokeColor3 = Color3.new(0, 0, 0),
+            TextStrokeTransparency = 0.7,
+            ZIndex = 4,
+            Parent = Inner,
+        })
+
+        local Card = { Stroke = BorderStroke, Hovered = false }
+        ThemePicker.Cards[Theme.Name] = Card
+
+        OnHover(Cell, function()
+            Card.Hovered = true
+            Tween(Inner, Library.FastTweenInfo, { Position = UDim2.fromOffset(0, -2) })
+            Tween(Glow, Library.FastTweenInfo, { ImageTransparency = 0.3 })
+            RefreshCards()
+        end, function()
+            Card.Hovered = false
+            Tween(Inner, Library.FastTweenInfo, { Position = UDim2.fromOffset(0, 0) })
+            Tween(Glow, Library.FastTweenInfo, { ImageTransparency = 0.6 })
+            RefreshCards()
+        end)
+
+        Cell.MouseButton1Click:Connect(function()
+            if Library:CanInteract() then
+                ThemePicker:SetValue(Theme.Name)
+            end
+        end)
+    end
+
+    function ThemePicker:SetValue(Name)
+        Library:SetTheme(Name)
+    end
+
+    function ThemePicker:OnChanged(Func)
+        ThemePicker.Changed = Func
+    end
+
+    for Order, Theme in Library.Themes do
+        BuildCard(Theme, Order)
+    end
+
+    table.insert(Library.ThemeHooks, function(Theme)
+        local Changed = ThemePicker.Value ~= Theme.Name
+        ThemePicker.Value = Theme.Name
+        RefreshCards()
+        if Changed then
+            Library:SafeCallback(ThemePicker.Changed, Theme.Name)
+        end
+    end)
+    RefreshCards()
+    RegisterElement("Ui3_Theme", ThemePicker)
 
     local DangerBox = Window:AddSettingsGroupbox("Script", "power")
     DangerBox:AddButton({
