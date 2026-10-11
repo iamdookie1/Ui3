@@ -415,7 +415,14 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 | `Ember` | Dark red nebula, orange accent |
 | `Aurora` | Teal and gold nebula, cyan accent |
 
-A nebula theme recolors the whole UI from its four colors, turns the window shadow into a colored glow, and adds slowly drifting clouds and twinkling stars behind the window. Switching themes cross-fades. The nebula themes recreate the animated buttons from [website5](https://github.com/iamdookie1/website5), using the same colors, drift keyframes, timings and star positions.
+The nebula themes recreate the animated buttons from [website5](https://github.com/iamdookie1/website5), using the same colors, cloud layout, drift keyframes, timings and star positions. Picking one:
+
+- turns **every button** into one of those nebula buttons: drifting clouds, twinkling stars, an inner top highlight and a colored glow that brightens on hover;
+- makes the **selected tab** a nebula button too;
+- recolors the rest of the UI from the theme's four colors and turns the window shadow into a colored glow;
+- adds a faint, slowly drifting nebula behind the whole window.
+
+The theme cards in settings are full copies of the website buttons, including the 3px lift on hover. Switching themes cross-fades. Roblox has no blur or radial gradients, so each gas cloud is a separable Gaussian: a CanvasGroup faded horizontally holding a frame faded vertically, which multiplies out to a round, edgeless soft cloud. Nebulas only animate while you can see them.
 
 ```lua
 Library:SetTheme("Ocean")
