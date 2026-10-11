@@ -579,28 +579,51 @@ function Library:SetTheme(Name, Instant)
     for _, Hook in Library.ThemeHooks do
         Library:SafeCallback(Hook, Theme, Instant)
     end
+    for _, Skin in Library.Nebulas do
+        if Skin.Settings.FollowTheme then
+            Skin:ApplyTheme(Theme, Instant)
+        end
+    end
     return true
 end
 
 --// Nebula renderer \\--
--- Clouds are soft blobs (the shadow image with slices big enough to meet in the middle);
--- layout, sizes, drift keyframes and stars are taken from the website's CSS. The ::before
--- layer there is 220% of the button, so its percentages are converted to button units.
-local NebulaBlobs = { -- listed top to bottom, like the CSS background layers
-    { Color = 3, X = 0.06, Y = 0.28, W = 1.08, H = 0.77 },
-    { Color = 2, X = 0.94, Y = 0.72, W = 1.23, H = 0.92 },
-    { Color = 1, X = 0.50, Y = 0.06, W = 0.92, H = 1.08 },
-    { Color = 2, X = -0.05, Y = 1.05, W = 1.39, H = 0.77 },
-    { Color = 3, X = 1.16, Y = -0.05, W = 0.83, H = 0.66 },
+-- Recreates the website's nebula buttons. Roblox has no blur and no radial gradients, so each
+-- gas cloud is a separable Gaussian: a CanvasGroup faded left-to-right holding a frame faded
+-- top-to-bottom. The product of the two fades is a round, edgeless soft blob, which is what a
+-- blurred CSS radial-gradient looks like. As in the CSS, all clouds sit on one layer that is
+-- 220% of the button and drifts (moves, rotates, scales) as a whole.
+
+local CloudFade
+do
+    local Points = {}
+    for Index = 0, 10 do
+        local X = Index / 10
+        local Distance = (X - 0.5) / 0.21
+        local Value = if Index == 0 or Index == 10 then 1 else 1 - math.exp(-Distance * Distance)
+        table.insert(Points, NumberSequenceKeypoint.new(X, Value))
+    end
+    CloudFade = NumberSequence.new(Points)
+end
+
+-- From the CSS ::before layer: radial-gradient(ellipse RX RY at X Y, color, transparent 70%).
+-- Positions are fractions of the layer; each cloud is 2*RX by 2*RY. First entry is drawn on top.
+local NebulaClouds = {
+    { Color = 3, X = 0.30, Y = 0.40, W = 0.70, H = 0.50 },
+    { Color = 2, X = 0.70, Y = 0.60, W = 0.80, H = 0.60 },
+    { Color = 1, X = 0.50, Y = 0.30, W = 0.60, H = 0.70 },
+    { Color = 2, X = 0.25, Y = 0.75, W = 0.90, H = 0.50 },
+    { Color = 3, X = 0.80, Y = 0.25, W = 0.50, H = 0.40 },
 }
 
--- translate (button units), rotate (degrees), scale
+-- @keyframes drift: translate (fraction of the layer), rotate (degrees), scale.
 local DriftKeys = {
     { 0, 0, 0, 1 },
-    { -0.176, 0.132, 8, 1.1 },
-    { 0.132, -0.11, -6, 1.05 },
+    { -0.08, 0.06, 8, 1.1 },
+    { 0.06, -0.05, -6, 1.05 },
 }
 
+-- The ::after star field (not part of the drifting layer).
 local PreviewStars = {
     { 0.12, 0.22, 1 }, { 0.34, 0.70, 1 }, { 0.58, 0.18, 2 }, { 0.76, 0.62, 1 },
     { 0.88, 0.30, 1 }, { 0.22, 0.85, 2 }, { 0.66, 0.88, 1 }, { 0.46, 0.45, 1 },
@@ -623,36 +646,108 @@ local function Smooth(T)
     return T * T * (3 - 2 * T)
 end
 
--- 0 -> 1 -> 0 over 2 * Duration, eased like CSS "ease-in-out ... alternate".
+-- 0 -> 1 -> 0 over 2 * Duration, like CSS "animation-direction: alternate".
 local function PingPong(Now, Duration, Delay)
     local T = (Now - Delay) % (Duration * 2)
     return if T < Duration then T / Duration else 2 - T / Duration
 end
 
+-- CSS filter: saturate(1.3)
+local function Saturate(Color, Amount)
+    local H, S, V = Color:ToHSV()
+    return Color3.fromHSV(H, math.min(1, S * Amount), V)
+end
+
 Library.Nebulas = {}
 
-local function CreateNebula(Parent, Settings)
-    local Nebula = {
-        Parent = Parent,
-        Preview = Settings.Preview == true,
+--[[
+    CreateNebulaSkin(Parent, Settings) draws a nebula filling Parent.
+        Theme             theme to draw (default: current theme)
+        Preview           use Theme.PreviewColors when present (theme cards)
+        FollowTheme       recolor / show / hide automatically when the theme changes
+        Wanted            owner-controlled visibility (e.g. "this tab is selected"); default true
+        Corner            corner radius
+        Background        fill with the theme's background color (default true)
+        LayerScale        size of the drifting cloud layer relative to Parent (default 2.2, like the CSS)
+        Stars             star list { x, y, size }
+        Highlight         1px inner top highlight (CSS inset box-shadow)
+        Border            soft white 1px border (CSS rgba(255,255,255,.18))
+        Glow              glow spread in px (CSS box-shadow 0 0 18px var(--glow))
+        GlowTransparency  glow strength (default 0.55)
+        VisibleTransparency  GroupTransparency when shown (default 0)
+        ZIndex            base ZIndex
+        IsActive          function: only animate while this returns true
+        OnVisibility      function(Shown) called when the skin appears / disappears
+]]
+local function CreateNebulaSkin(Parent, Settings)
+    local BaseZ = Settings.ZIndex or 1
+    local LayerScale = Settings.LayerScale or 2.2
+
+    local Skin = {
+        Settings = Settings,
         IsActive = Settings.IsActive,
-        Blobs = {},
-        Stars = {},
+        Wanted = Settings.Wanted ~= false,
+        Shown = nil,
         Theme = nil,
+        Clouds = {},
+        Stars = {},
     }
 
-    for Index, Spec in NebulaBlobs do
-        local Blob = New("ImageLabel", {
+    local Glow
+    if Settings.Glow then
+        Glow = New("ImageLabel", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             Image = Assets.Shadow,
-            Position = UDim2.fromScale(Spec.X, Spec.Y),
+            ImageTransparency = 1,
+            Position = UDim2.fromScale(0.5, 0.5),
             ScaleType = Enum.ScaleType.Slice,
             SliceCenter = Rect.new(23, 23, 277, 277),
-            Size = UDim2.fromScale(Spec.W, Spec.H),
-            ZIndex = #NebulaBlobs - Index + 1,
+            Size = UDim2.new(1, Settings.Glow * 2, 1, Settings.Glow * 2),
+            ZIndex = BaseZ,
             Parent = Parent,
         })
-        table.insert(Nebula.Blobs, { Image = Blob, Spec = Spec })
+    end
+
+    local Canvas = New("CanvasGroup", {
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = if Settings.Background == false then 1 else 0,
+        GroupTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+        ZIndex = BaseZ,
+        Parent = Parent,
+    })
+    if Settings.Corner then
+        Corner(Canvas, Settings.Corner)
+    end
+
+    local Layer = New("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromScale(LayerScale, LayerScale),
+        Parent = Canvas,
+    })
+
+    for Index, Spec in NebulaClouds do
+        local Cloud = New("CanvasGroup", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundTransparency = 1,
+            Position = UDim2.fromScale(Spec.X, Spec.Y),
+            Size = UDim2.fromScale(Spec.W, Spec.H),
+            ZIndex = #NebulaClouds - Index + 1,
+            Parent = Layer,
+        })
+        New("UIGradient", { Transparency = CloudFade, Parent = Cloud })
+
+        local Fill = New("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            Size = UDim2.fromScale(1, 1),
+            Parent = Cloud,
+        })
+        New("UIGradient", { Rotation = 90, Transparency = CloudFade, Parent = Fill })
+
+        table.insert(Skin.Clouds, { Fill = Fill, Spec = Spec })
     end
 
     for Index, Star in Settings.Stars or {} do
@@ -662,33 +757,168 @@ local function CreateNebula(Parent, Settings)
             BackgroundTransparency = 0.4,
             Position = UDim2.fromScale(Star[1], Star[2]),
             Size = UDim2.fromOffset(Star[3], Star[3]),
-            ZIndex = #NebulaBlobs + 2,
-            Parent = Parent,
+            ZIndex = 10,
+            Parent = Canvas,
         })
         if Star[3] > 1 then
             Corner(Dot, UDim.new(1, 0))
         end
-        table.insert(Nebula.Stars, { Dot = Dot, Phase = Index * 0.37 })
+        table.insert(Skin.Stars, { Dot = Dot, Phase = Index * 0.37 })
     end
 
-    function Nebula:SetTheme(Theme)
-        Nebula.Theme = Theme
-        local Colors = if Nebula.Preview then (Theme.PreviewColors or Theme.Colors) else Theme.Colors
+    if Settings.Highlight then
+        New("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0.85,
+            Size = UDim2.new(1, 0, 0, 1),
+            ZIndex = 11,
+            Parent = Canvas,
+        })
+    end
+
+    -- Hover brightening (CSS :hover brightness(1.2)).
+    local Shade = New("Frame", {
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 12,
+        Parent = Canvas,
+    })
+
+    local BorderStroke
+    if Settings.Border then
+        local Border = New("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = BaseZ + 1,
+            Parent = Parent,
+        })
+        if Settings.Corner then
+            Corner(Border, Settings.Corner)
+        end
+        BorderStroke = New("UIStroke", {
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = Color3.new(1, 1, 1),
+            Transparency = 0.82,
+            Parent = Border,
+        })
+    end
+
+    Skin.Canvas = Canvas
+    Skin.Layer = Layer
+    Skin.Glow = Glow
+    Skin.Shade = Shade
+    Skin.BorderStroke = BorderStroke
+
+    function Skin:SetTheme(Theme)
+        Skin.Theme = Theme
+        local Colors = if Settings.Preview then (Theme.PreviewColors or Theme.Colors) else Theme.Colors
         if not Colors then
             return
         end
-        for _, Blob in Nebula.Blobs do
-            Blob.Image.ImageColor3 = Colors[Blob.Spec.Color]
+        Canvas.BackgroundColor3 = Colors[4]
+        for _, Cloud in Skin.Clouds do
+            Cloud.Fill.BackgroundColor3 = Saturate(Colors[Cloud.Spec.Color], 1.3)
+        end
+        if Glow then
+            Glow.ImageColor3 = Theme.Glow or Colors[2]
         end
     end
 
-    function Nebula:Step(Now)
-        local Theme = Nebula.Theme
+    function Skin:Refresh(Instant)
+        local Theme = Skin.Theme
+        local HasColors = false
+        if Theme then
+            HasColors = Theme.Colors ~= nil or (Settings.Preview == true and Theme.PreviewColors ~= nil)
+        end
+        local Show = Skin.Wanted == true and HasColors
+        if Show == Skin.Shown and not Instant then
+            return
+        end
+        Skin.Shown = Show
+
+        local GroupTarget = if Show then (Settings.VisibleTransparency or 0) else 1
+        local GlowTarget = if Show then (Settings.GlowTransparency or 0.55) else 1
+
+        if Settings.OnVisibility then
+            Settings.OnVisibility(Show)
+        end
+        if BorderStroke then
+            BorderStroke.Enabled = Show
+        end
+
+        if Instant then
+            Canvas.Visible = Show
+            Canvas.GroupTransparency = GroupTarget
+            if Glow then
+                Glow.Visible = Show
+                Glow.ImageTransparency = GlowTarget
+            end
+            return
+        end
+
+        if Show then
+            Canvas.Visible = true
+            if Glow then
+                Glow.Visible = true
+            end
+        end
+        local Fade = Tween(Canvas, Library.TweenInfo, { GroupTransparency = GroupTarget })
+        if Glow then
+            Tween(Glow, Library.TweenInfo, { ImageTransparency = GlowTarget })
+        end
+        if not Show then
+            -- Hidden canvases stop rendering entirely.
+            Fade.Completed:Connect(function()
+                if not Skin.Shown then
+                    Canvas.Visible = false
+                    if Glow then
+                        Glow.Visible = false
+                    end
+                end
+            end)
+        end
+    end
+
+    function Skin:SetWanted(Wanted, Instant)
+        Skin.Wanted = Wanted
+        Skin:Refresh(Instant)
+    end
+
+    function Skin:SetHover(Hovered)
+        Tween(Shade, Library.FastTweenInfo, { BackgroundTransparency = Hovered and 0.9 or 1 })
+        if Glow and Skin.Shown then
+            local Base = Settings.GlowTransparency or 0.55
+            Tween(Glow, Library.FastTweenInfo, { ImageTransparency = Hovered and math.max(0, Base - 0.3) or Base })
+        end
+        if BorderStroke then
+            Tween(BorderStroke, Library.FastTweenInfo, { Transparency = Hovered and 0.6 or 0.82 })
+        end
+    end
+
+    -- Called by Library:SetTheme for FollowTheme skins: fade out, swap colors, fade back in.
+    function Skin:ApplyTheme(Theme, Instant)
+        if Skin.Shown and not Instant and Theme.Colors and Skin.Theme ~= Theme then
+            Skin.Shown = false
+            local Out = Tween(Canvas, TweenInfo.new(0.18, Enum.EasingStyle.Quad), { GroupTransparency = 1 })
+            Out.Completed:Connect(function()
+                if Library.CurrentTheme == Theme then
+                    Skin:SetTheme(Theme)
+                    Skin:Refresh(false)
+                end
+            end)
+            return
+        end
+        Skin:SetTheme(Theme)
+        Skin:Refresh(Instant)
+    end
+
+    function Skin:Step(Now)
+        local Theme = Skin.Theme
         if not Theme then
             return
         end
 
-        -- Drift: k0 -> k1 -> k2 and back, each segment eased.
         local U = PingPong(Now, Theme.Duration or 14, Theme.Delay or 0)
         local A, B, S
         if U < 0.5 then
@@ -696,43 +926,27 @@ local function CreateNebula(Parent, Settings)
         else
             A, B, S = DriftKeys[2], DriftKeys[3], Smooth((U - 0.5) / 0.5)
         end
-        local Dx = A[1] + (B[1] - A[1]) * S
-        local Dy = A[2] + (B[2] - A[2]) * S
-        local Angle = math.rad(A[3] + (B[3] - A[3]) * S)
         local Scale = A[4] + (B[4] - A[4]) * S
-        local Cos, Sin = math.cos(Angle), math.sin(Angle)
 
-        -- Rotate in pixel space so the swirl isn't squashed on wide frames.
-        local Size = Parent.AbsoluteSize
-        local Width, Height = math.max(Size.X, 1), math.max(Size.Y, 1)
-        local Ratio = Width / Height
-        local Dpi = math.max(Library.DPIScale, 0.01)
+        Layer.Position = UDim2.fromScale(
+            0.5 + (A[1] + (B[1] - A[1]) * S) * LayerScale,
+            0.5 + (A[2] + (B[2] - A[2]) * S) * LayerScale
+        )
+        Layer.Rotation = A[3] + (B[3] - A[3]) * S
+        Layer.Size = UDim2.fromScale(LayerScale * Scale, LayerScale * Scale)
 
-        for _, Blob in Nebula.Blobs do
-            local Spec = Blob.Spec
-            local X = (Spec.X - 0.5) * Ratio
-            local Y = Spec.Y - 0.5
-            local RX = (X * Cos - Y * Sin) * Scale
-            local RY = (X * Sin + Y * Cos) * Scale
-            Blob.Image.Position = UDim2.fromScale(0.5 + RX / Ratio + Dx, 0.5 + RY + Dy)
-            Blob.Image.Size = UDim2.fromScale(Spec.W * Scale, Spec.H * Scale)
-
-            -- Slices meet in the middle => the whole blob is soft falloff, like a radial gradient.
-            local Pixels = math.min(Spec.W * Scale * Width, Spec.H * Scale * Height) / Dpi
-            Blob.Image.SliceScale = math.max(0.2, Pixels / 46)
-        end
-
-        -- Twinkle: opacity 0.35 -> 1, with a small per-star offset.
+        -- @keyframes twinkle: opacity 0.35 -> 1, with a small per-star offset.
         local Twinkle = Theme.Twinkle or 3
-        for _, Star in Nebula.Stars do
+        for _, Star in Skin.Stars do
             local V = Smooth(PingPong(Now + Star.Phase, Twinkle, Theme.TwinkleDelay or 0))
             Star.Dot.BackgroundTransparency = 1 - (0.35 + 0.65 * V)
         end
     end
 
-    Nebula:SetTheme(Settings.Theme or Library.CurrentTheme)
-    table.insert(Library.Nebulas, Nebula)
-    return Nebula
+    Skin:SetTheme(Settings.Theme or Library.CurrentTheme)
+    Skin:Refresh(true)
+    table.insert(Library.Nebulas, Skin)
+    return Skin
 end
 
 -- Drives theme cross-fades and every visible nebula at 30 updates per second.
@@ -768,12 +982,12 @@ do
         local Index = 1
         local Nebulas = Library.Nebulas
         while Index <= #Nebulas do
-            local Nebula = Nebulas[Index]
-            if Nebula.Parent.Parent == nil then
+            local Skin = Nebulas[Index]
+            if Skin.Canvas.Parent == nil then
                 table.remove(Nebulas, Index)
             else
-                if Nebula.IsActive == nil or Nebula.IsActive() then
-                    Nebula:Step(Now)
+                if Skin.Shown and (Skin.IsActive == nil or Skin.IsActive()) then
+                    Skin:Step(Now)
                 end
                 Index += 1
             end
@@ -2527,12 +2741,48 @@ function Funcs:AddButton(...)
             TextColor3 = Button.Risky and "RedColor" or "FontColor",
             TextTransparency = 0.4,
             TextTruncate = Enum.TextTruncate.AtEnd,
-            ZIndex = 2,
+            ZIndex = 3,
             Parent = Base,
         })
 
         Button.Base = Base
         Button.Label = Label
+
+        -- Resting text transparency: brighter over a nebula so it stays readable.
+        local function RestText()
+            if Button.Disabled then
+                return 0.8
+            end
+            return if Button.Nebula then 0.1 else 0.4
+        end
+
+        -- Nebula themes turn every button into one of the website's nebula buttons.
+        local Groupbox = self
+        Button.Skin = CreateNebulaSkin(Base, {
+            Corner = 6,
+            FollowTheme = true,
+            Glow = 7,
+            GlowTransparency = 0.68,
+            Highlight = true,
+            Stars = PreviewStars,
+            ZIndex = 1,
+            IsActive = function()
+                if not (Library.Toggled and Base.Visible) then
+                    return false
+                end
+                if Groupbox.Tab then
+                    return Library.ActiveTab == Groupbox.Tab
+                end
+                return Library.Window ~= nil and Library.Window:IsSettingsOpen()
+            end,
+            OnVisibility = function(Shown)
+                Button.Nebula = Shown
+                -- The glow needs to spill outside the button; the nebula canvas clips ripples itself.
+                Base.ClipsDescendants = not Shown
+                Label.TextTransparency = RestText()
+                Label.TextStrokeTransparency = if Shown then 0.8 else 1
+            end,
+        })
 
         if Data.Tooltip or Data.DisabledTooltip then
             Button.TooltipTable = Library:AddTooltip(Data.Tooltip, Data.DisabledTooltip, Base)
@@ -2554,7 +2804,7 @@ function Funcs:AddButton(...)
         function Button:SetDisabled(Disabled)
             Button.Disabled = Disabled
             Base.Active = not Disabled
-            Label.TextTransparency = Disabled and 0.8 or 0.4
+            Label.TextTransparency = RestText()
             BaseStroke.Transparency = Disabled and 0.5 or 0
             if Button.TooltipTable then
                 Button.TooltipTable.Disabled = Disabled
@@ -2577,12 +2827,16 @@ function Funcs:AddButton(...)
             SetThemed(Base, "BackgroundColor3", function()
                 return Library.Scheme.SecondaryColor:Lerp(Library.Scheme.FontColor, 0.04)
             end, Library.FastTweenInfo)
+            if Button.Nebula then
+                Button.Skin:SetHover(true)
+            end
         end, function()
             if Button.Disabled then
                 return
             end
-            Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.4 })
+            Tween(Label, Library.FastTweenInfo, { TextTransparency = RestText() })
             SetThemed(Base, "BackgroundColor3", "SecondaryColor", Library.FastTweenInfo)
+            Button.Skin:SetHover(false)
         end)
 
         -- Syde-style press: accent ripple + stroke flash. Not themed: it only lives for 0.6s.
@@ -2597,9 +2851,9 @@ function Funcs:AddButton(...)
                 (Position.Y - Base.AbsolutePosition.Y) / Library.DPIScale
             )
             Circle.Size = UDim2.fromOffset(0, 0)
-            Circle.ZIndex = 1
+            Circle.ZIndex = if Button.Nebula then 13 else 2
             Corner(Circle, UDim.new(1, 0))
-            Circle.Parent = Base
+            Circle.Parent = if Button.Nebula then Button.Skin.Canvas else Base
 
             local Diameter = math.max(Base.AbsoluteSize.X, Base.AbsoluteSize.Y) / Library.DPIScale * 2.2
             Tween(Circle, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {
@@ -4634,23 +4888,21 @@ function Library:CreateWindow(WindowInfo)
     Corner(Main, WindowInfo.CornerRadius)
     Stroke(Main)
 
-    -- Nebula backdrop for nebula themes. A CanvasGroup so the clouds clip to the rounded
-    -- corners; it holds no UI, so its render resolution doesn't matter.
-    local NebulaLayer = New("CanvasGroup", {
-        BackgroundTransparency = 1,
-        GroupTransparency = 1,
-        Size = UDim2.fromScale(1, 1),
-        Visible = false,
-        ZIndex = 0,
-        Parent = Main,
-    })
-    Corner(NebulaLayer, WindowInfo.CornerRadius)
-    local WindowNebula = CreateNebula(NebulaLayer, {
+    -- Nebula backdrop for nebula themes: a faint, slowly drifting copy of the theme's nebula
+    -- behind everything. Its CanvasGroup clips the clouds to the rounded corners.
+    local WindowNebula = CreateNebulaSkin(Main, {
+        Background = false,
+        Corner = WindowInfo.CornerRadius,
+        FollowTheme = true,
+        LayerScale = 1.5,
         Stars = WindowStars,
+        VisibleTransparency = 0.6,
+        ZIndex = 0,
         IsActive = function()
-            return Library.Toggled and NebulaLayer.Visible
+            return Library.Toggled
         end,
     })
+    local NebulaLayer = WindowNebula.Canvas
 
     -- Border light: a second, see-through outline on top of the window border. A rotating
     -- gradient makes one stretch of it bright, so a light travels around the frame.
@@ -4778,46 +5030,19 @@ function Library:CreateWindow(WindowInfo)
 
     -- Nebula themes: clouds drift behind the window (content area slightly see-through) and
     -- the shadow becomes a colored glow. Monochrome hides the nebula.
+    -- (The window nebula follows the theme by itself.)
     local function ApplyWindowTheme(Theme, Instant)
         local HasNebula = Theme.Colors ~= nil
-        local NebulaTarget = if HasNebula then (Theme.NebulaTransparency or 0.62) else 1
         local ContainerTarget = if HasNebula then 0.6 else 0
         local ShadowTarget = if HasNebula then 0.45 else 0.25
 
         if Instant then
-            if HasNebula then
-                WindowNebula:SetTheme(Theme)
-            end
-            NebulaLayer.Visible = HasNebula
-            NebulaLayer.GroupTransparency = NebulaTarget
             Container.BackgroundTransparency = ContainerTarget
             WindowShadow.ImageTransparency = ShadowTarget
             return
         end
-
         Tween(Container, Library.TweenInfo, { BackgroundTransparency = ContainerTarget })
         Tween(WindowShadow, Library.TweenInfo, { ImageTransparency = ShadowTarget })
-
-        if NebulaLayer.Visible then
-            -- Fade the old clouds out, swap colors, fade the new ones in.
-            local Out = Tween(NebulaLayer, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { GroupTransparency = 1 })
-            Out.Completed:Connect(function()
-                if Library.CurrentTheme ~= Theme then
-                    return
-                end
-                if HasNebula then
-                    WindowNebula:SetTheme(Theme)
-                    Tween(NebulaLayer, TweenInfo.new(0.5, Enum.EasingStyle.Quad), { GroupTransparency = NebulaTarget })
-                else
-                    NebulaLayer.Visible = false
-                end
-            end)
-        elseif HasNebula then
-            WindowNebula:SetTheme(Theme)
-            NebulaLayer.GroupTransparency = 1
-            NebulaLayer.Visible = true
-            Tween(NebulaLayer, TweenInfo.new(0.5, Enum.EasingStyle.Quad), { GroupTransparency = NebulaTarget })
-        end
     end
     table.insert(Library.ThemeHooks, ApplyWindowTheme)
     ApplyWindowTheme(Library.CurrentTheme, true)
@@ -4966,6 +5191,19 @@ function Library:CreateWindow(WindowInfo)
         Corner(TabButton, 8)
         local ButtonStroke = Stroke(TabButton, "OutlineColor", 1)
 
+        -- In nebula themes the selected tab is a nebula button too.
+        local TabSkin = CreateNebulaSkin(TabButton, {
+            Corner = 8,
+            FollowTheme = true,
+            Highlight = true,
+            Stars = PreviewStars,
+            Wanted = false,
+            ZIndex = 1,
+            IsActive = function()
+                return Library.Toggled and Library.ActiveTab == Tab
+            end,
+        })
+
         local Indicator = New("Frame", {
             BackgroundColor3 = "AccentColor",
             BackgroundTransparency = 1,
@@ -5074,6 +5312,7 @@ function Library:CreateWindow(WindowInfo)
 
         function Tab:SetSelected(Selected)
             local TweenData = Library.TweenInfo
+            TabSkin:SetWanted(Selected)
             Tween(TabButton, TweenData, { BackgroundTransparency = Selected and Library.Transparency.Element or 1 })
             Tween(ButtonStroke, TweenData, { Transparency = Selected and 0 or 1 })
             Tween(TabLabel, TweenData, { TextTransparency = Selected and 0 or 0.5 })
@@ -5564,7 +5803,7 @@ function Library:CreateWindow(WindowInfo)
     })
     New("UIGridLayout", {
         CellPadding = UDim2.fromOffset(10, 12),
-        CellSize = UDim2.new(0.5, -5, 0, 40),
+        CellSize = UDim2.new(0.5, -5, 0, 42),
         SortOrder = Enum.SortOrder.LayoutOrder,
         Parent = Grid,
     })
@@ -5579,13 +5818,17 @@ function Library:CreateWindow(WindowInfo)
     local function RefreshCards()
         for Name, Card in ThemePicker.Cards do
             local Selected = Name == ThemePicker.Value
-            Tween(Card.Stroke, Library.FastTweenInfo, {
-                Thickness = Selected and 1.6 or 1,
-                Transparency = Selected and 0 or (Card.Hovered and 0.55 or 0.82),
+            local Stroke = Card.Skin.BorderStroke
+            Tween(Stroke, Library.FastTweenInfo, {
+                Thickness = Selected and 1.5 or 1,
+                Transparency = Selected and 0 or (Card.Hovered and 0.6 or 0.82),
             })
+            Card.Check.Visible = Selected
         end
     end
 
+    -- Each card is the website button: nebula, stars, 1px soft border, inner top highlight,
+    -- colored glow; hover lifts it 3px, brightens it and strengthens the glow.
     local function BuildCard(Theme, Order)
         local Cell = New("TextButton", {
             BackgroundTransparency = 1,
@@ -5600,48 +5843,19 @@ function Library:CreateWindow(WindowInfo)
             Parent = Cell,
         })
 
-        local Glow = New("ImageLabel", {
-            AnchorPoint = Vector2.new(0.5, 0.5),
-            Image = Assets.Shadow,
-            ImageColor3 = Theme.Glow or Color3.new(1, 1, 1),
-            ImageTransparency = 0.6,
-            Position = UDim2.fromScale(0.5, 0.5),
-            ScaleType = Enum.ScaleType.Slice,
-            SliceCenter = Rect.new(23, 23, 277, 277),
-            Size = UDim2.new(1, 22, 1, 22),
-            ZIndex = 1,
-            Parent = Inner,
-        })
-
-        local Colors = Theme.PreviewColors or Theme.Colors
-        local Canvas = New("CanvasGroup", {
-            BackgroundColor3 = Colors[4],
-            Size = UDim2.fromScale(1, 1),
-            ZIndex = 2,
-            Parent = Inner,
-        })
-        Corner(Canvas, 10)
-        CreateNebula(Canvas, {
+        local Skin = CreateNebulaSkin(Inner, {
             Theme = Theme,
             Preview = true,
+            Corner = 12,
+            Border = true,
+            Highlight = true,
+            Glow = 12,
+            GlowTransparency = 0.5,
             Stars = PreviewStars,
+            ZIndex = 1,
             IsActive = function()
                 return Library.Toggled and SettingsOpen
             end,
-        })
-
-        local Border = New("Frame", {
-            BackgroundTransparency = 1,
-            Size = UDim2.fromScale(1, 1),
-            ZIndex = 3,
-            Parent = Inner,
-        })
-        Corner(Border, 10)
-        local BorderStroke = New("UIStroke", {
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-            Color = Color3.new(1, 1, 1),
-            Transparency = 0.82,
-            Parent = Border,
         })
 
         -- Outside the CanvasGroup so the text stays crisp.
@@ -5652,24 +5866,42 @@ function Library:CreateWindow(WindowInfo)
             TextColor3 = Color3.new(1, 1, 1),
             TextSize = 13,
             TextStrokeColor3 = Color3.new(0, 0, 0),
-            TextStrokeTransparency = 0.7,
+            TextStrokeTransparency = 0.75,
             ZIndex = 4,
             Parent = Inner,
         })
 
-        local Card = { Stroke = BorderStroke, Hovered = false }
+        -- Selected marker: a small white dot in the corner.
+        local Check = New("Frame", {
+            AnchorPoint = Vector2.new(1, 0),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            Position = UDim2.new(1, -7, 0, 7),
+            Size = UDim2.fromOffset(6, 6),
+            Visible = false,
+            ZIndex = 4,
+            Parent = Inner,
+        })
+        Corner(Check, UDim.new(1, 0))
+
+        local Card = { Skin = Skin, Check = Check, Hovered = false }
         ThemePicker.Cards[Theme.Name] = Card
 
         OnHover(Cell, function()
             Card.Hovered = true
-            Tween(Inner, Library.FastTweenInfo, { Position = UDim2.fromOffset(0, -2) })
-            Tween(Glow, Library.FastTweenInfo, { ImageTransparency = 0.3 })
+            Tween(Inner, Library.FastTweenInfo, { Position = UDim2.fromOffset(0, -3) })
+            Skin:SetHover(true)
             RefreshCards()
         end, function()
             Card.Hovered = false
             Tween(Inner, Library.FastTweenInfo, { Position = UDim2.fromOffset(0, 0) })
-            Tween(Glow, Library.FastTweenInfo, { ImageTransparency = 0.6 })
+            Skin:SetHover(false)
             RefreshCards()
+        end)
+
+        Cell.InputBegan:Connect(function(Input)
+            if IsClick(Input) then
+                Tween(Inner, Library.FastTweenInfo, { Position = UDim2.fromOffset(0, 0) }) -- :active
+            end
         end)
 
         Cell.MouseButton1Click:Connect(function()
