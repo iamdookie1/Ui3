@@ -1761,7 +1761,7 @@ local Templates = {
         ShowSettings = true,
         ShowControls = true, -- minimize + close buttons
         ShowProfile = true, -- avatar card in the Modern layout
-        Layout = "Modern", -- Modern, Classic, Compact, Topbar
+        Layout = "Modern", -- Modern, Classic, Compact
     },
     Groupbox = {
         Side = "Left",
@@ -1808,6 +1808,8 @@ local Templates = {
         AllowNull = false,
         Searchable = false,
         MaxVisibleDropdownItems = 8,
+        Style = "List", -- "List" or "Chips" (a grid of pills in the popup)
+        Columns = 3, -- Chips style: pills per row
         Disabled = false,
         Visible = true,
         Callback = function() end,
@@ -1846,20 +1848,13 @@ local Templates = {
         Icon = "search",
         Callback = function() end,
     },
-    Chips = {
-        Values = {},
-        Multi = false,
-        AllowNull = false,
-        Columns = 3,
-        Height = 34,
-        Callback = function() end,
-    },
     ItemGrid = {
         Items = {},
         Multi = false,
         AllowNull = true,
         CellHeight = 176,
         MinCellWidth = 128,
+        Spin = "Hover", -- 3D items: "Hover", true (always) or false
         EmptyText = "No items found",
         Callback = function() end,
     },
@@ -3498,8 +3493,12 @@ function Funcs:AddDropdown(Idx, Info)
     end
 
     local Groupbox = self
+    local ChipStyle = Info.Style == "Chips"
+    local Columns = math.max(1, math.floor(Info.Columns))
     local RowHeight = 26
     local RowGap = 2
+    local ChipHeight = 30
+    local ChipGap = 6
 
     local Dropdown = {
         Text = Info.Text,
@@ -3593,7 +3592,9 @@ function Funcs:AddDropdown(Idx, Info)
     local Popup = Library:CreatePopup(Box, {
         Align = "Left",
         GetWidth = function()
-            return math.floor(Box.AbsoluteSize.X + 0.5)
+            local Width = math.floor(Box.AbsoluteSize.X + 0.5)
+            -- Pills need room for their text; don't squeeze them into a narrow box.
+            return if ChipStyle then math.max(Width, Columns * 84) else Width
         end,
     })
     local Menu = Popup.Frame
@@ -3635,7 +3636,17 @@ function Funcs:AddDropdown(Idx, Info)
         ZIndex = 51,
         Parent = Menu,
     }))
-    List(ListFrame, RowGap)
+    if ChipStyle then
+        Padding(ListFrame, 2)
+        New("UIGridLayout", {
+            CellPadding = UDim2.fromOffset(ChipGap, ChipGap),
+            CellSize = UDim2.new(1 / Columns, -ChipGap * (Columns - 1) / Columns, 0, ChipHeight),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = ListFrame,
+        })
+    else
+        List(ListFrame, RowGap)
+    end
 
     local EmptyLabel = New("TextLabel", {
         LayoutOrder = 999999,
@@ -3719,8 +3730,14 @@ function Funcs:AddDropdown(Idx, Info)
         end
         EmptyLabel.Visible = VisibleCount == 0
 
-        local Shown = math.clamp(VisibleCount, 1, Info.MaxVisibleDropdownItems)
-        local ListHeight = Shown * RowHeight + (Shown - 1) * RowGap
+        local ListHeight
+        if ChipStyle then
+            local Lines = math.clamp(math.ceil(VisibleCount / Columns), 1, math.max(1, math.ceil(Info.MaxVisibleDropdownItems / Columns)))
+            ListHeight = Lines * ChipHeight + (Lines - 1) * ChipGap + 4
+        else
+            local Shown = math.clamp(VisibleCount, 1, Info.MaxVisibleDropdownItems)
+            ListHeight = Shown * RowHeight + (Shown - 1) * RowGap
+        end
         ListFrame.Size = UDim2.new(1, 0, 0, ListHeight)
 
         local Height = ListHeight + 8 + (SearchBox and RowHeight + 4 or 0)
@@ -3765,6 +3782,83 @@ function Funcs:AddDropdown(Idx, Info)
         Library:SafeCallback(Dropdown.Changed, Dropdown.Value)
     end
 
+    local function Pick(Value)
+        if Dropdown.Disabled or IsValueDisabled(Value) or not Library:CanInteract() then
+            return
+        end
+
+        if Dropdown.Multi then
+            Dropdown.Value[Value] = (not Dropdown.Value[Value]) or nil
+        else
+            if Dropdown.Value == Value then
+                if not Dropdown.AllowNull then
+                    Popup:Close()
+                    return
+                end
+                Dropdown.Value = nil
+            else
+                Dropdown.Value = Value
+            end
+        end
+
+        Dropdown:Display()
+        UpdateRows()
+        Dropdown:RunChanged()
+
+        if not Dropdown.Multi then
+            Popup:Close()
+        end
+    end
+
+    -- Chips style: a pill; the selected ones are filled with the accent.
+    local function BuildChip(Row, Order)
+        local Value = Row.Value
+        local Chip = New("TextButton", {
+            BackgroundColor3 = "SecondaryColor",
+            LayoutOrder = Order,
+            ZIndex = 52,
+            Parent = ListFrame,
+        })
+        Corner(Chip, 8)
+        local ChipStroke = Stroke(Chip)
+
+        local Text = New("TextLabel", {
+            Size = UDim2.fromScale(1, 1),
+            Text = Row.Label,
+            TextSize = 13,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 53,
+            Parent = Chip,
+        })
+        Padding(Text, 0, 0, 6, 6)
+
+        Row.Button = Chip
+
+        function Row.Update(Instant)
+            local Selected = IsSelected(Value)
+            local TweenData = if Instant then false else Library.FastTweenInfo
+            SetThemed(Chip, "BackgroundColor3", Selected and "AccentColor" or "SecondaryColor", TweenData)
+            SetThemed(ChipStroke, "Color", Selected and "AccentColor" or "OutlineColor", TweenData)
+            SetThemed(Text, "TextColor3", Selected and "BackgroundColor" or "FontColor", TweenData)
+            Text.TextTransparency = if IsValueDisabled(Value) then 0.75 elseif Selected then 0 else 0.3
+        end
+
+        OnHover(Chip, function()
+            if not IsSelected(Value) and not IsValueDisabled(Value) then
+                Tween(Text, Library.FastTweenInfo, { TextTransparency = 0 })
+            end
+        end, function()
+            Row.Update()
+        end)
+
+        Chip.MouseButton1Click:Connect(function()
+            Pick(Value)
+        end)
+
+        Row.Update(true)
+        table.insert(Rows, Row)
+    end
+
     local function BuildRows()
         for _, Row in Rows do
             Row.Button:Destroy()
@@ -3776,6 +3870,11 @@ function Funcs:AddDropdown(Idx, Info)
                 Value = Value,
                 Label = GetLabel(Value),
             }
+
+            if ChipStyle then
+                BuildChip(Row, Order)
+                continue
+            end
 
             local Button = New("TextButton", {
                 BackgroundColor3 = "SecondaryColor",
@@ -3850,31 +3949,7 @@ function Funcs:AddDropdown(Idx, Info)
             end)
 
             Button.MouseButton1Click:Connect(function()
-                if Dropdown.Disabled or IsValueDisabled(Value) or not Library:CanInteract() then
-                    return
-                end
-
-                if Dropdown.Multi then
-                    Dropdown.Value[Value] = (not Dropdown.Value[Value]) or nil
-                else
-                    if Dropdown.Value == Value then
-                        if not Dropdown.AllowNull then
-                            Popup:Close()
-                            return
-                        end
-                        Dropdown.Value = nil
-                    else
-                        Dropdown.Value = Value
-                    end
-                end
-
-                Dropdown:Display()
-                UpdateRows()
-                Dropdown:RunChanged()
-
-                if not Dropdown.Multi then
-                    Popup:Close()
-                end
+                Pick(Value)
             end)
 
             Row.Update()
@@ -4668,231 +4743,6 @@ function Funcs:AddSearchBox(Idx, Info)
     return Search
 end
 
--- A grid of pill buttons; the selected one is filled with the accent (like "All / Godly / Ancient").
-function Funcs:AddChips(Idx, Info)
-    Info = Library:Validate(Info, Templates.Chips)
-
-    local Chips = {
-        Text = Info.Text,
-        Values = Info.Values,
-        Value = if Info.Multi then {} else nil,
-        Multi = Info.Multi,
-        AllowNull = Info.AllowNull,
-        Callback = Info.Callback,
-        Changed = Info.Changed,
-        Buttons = {},
-        Type = "Chips",
-    }
-
-    local Holder = New("Frame", {
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Size = UDim2.fromScale(1, 0),
-        Parent = self.Container,
-    })
-    List(Holder, 6)
-
-    if Info.Text then
-        New("TextLabel", {
-            Size = UDim2.new(1, 0, 0, 16),
-            Text = Info.Text,
-            TextTransparency = 0.4,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            Parent = Holder,
-        })
-    end
-
-    local Grid = New("Frame", {
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        LayoutOrder = 1,
-        Size = UDim2.fromScale(1, 0),
-        Parent = Holder,
-    })
-    local Columns = math.max(1, math.floor(Info.Columns))
-    New("UIGridLayout", {
-        CellPadding = UDim2.fromOffset(8, 8),
-        CellSize = UDim2.new(1 / Columns, -8 * (Columns - 1) / Columns, 0, Info.Height),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Parent = Grid,
-    })
-
-    local function IsSelected(Value)
-        if Chips.Multi then
-            return Chips.Value[Value] == true
-        end
-        return Chips.Value == Value
-    end
-
-    function Chips:Display(Instant)
-        local TweenData = if Instant then false else Library.FastTweenInfo
-        for Value, Chip in Chips.Buttons do
-            local On = IsSelected(Value)
-            SetThemed(Chip.Base, "BackgroundColor3", On and "AccentColor" or "SecondaryColor", TweenData)
-            SetThemed(Chip.Stroke, "Color", On and "AccentColor" or "OutlineColor", TweenData)
-            SetThemed(Chip.Label, "TextColor3", On and "BackgroundColor" or "FontColor", TweenData)
-            Chip.Base.BackgroundTransparency = if On then 0 else Library.Transparency.Element
-            Chip.Label.TextTransparency = if On then 0 else 0.3
-        end
-    end
-
-    function Chips:RunChanged()
-        Library:SafeCallback(Chips.Callback, Chips.Value)
-        Library:SafeCallback(Chips.Changed, Chips.Value)
-    end
-
-    local function Build()
-        for _, Chip in Chips.Buttons do
-            Chip.Base:Destroy()
-        end
-        table.clear(Chips.Buttons)
-
-        for Order, Value in Chips.Values do
-            local Base = New("TextButton", {
-                BackgroundColor3 = "SecondaryColor",
-                LayoutOrder = Order,
-                Parent = Grid,
-            })
-            Corner(Base, 8)
-            local ChipStroke = Stroke(Base)
-            Sheen(Base)
-
-            local Label = New("TextLabel", {
-                Size = UDim2.fromScale(1, 1),
-                Text = tostring(Value),
-                TextSize = 14,
-                TextTruncate = Enum.TextTruncate.AtEnd,
-                Parent = Base,
-            })
-            Padding(Label, 0, 0, 6, 6)
-
-            OnHover(Base, function()
-                if not IsSelected(Value) then
-                    Tween(Label, Library.FastTweenInfo, { TextTransparency = 0 })
-                end
-            end, function()
-                if not IsSelected(Value) then
-                    Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.3 })
-                end
-            end)
-
-            Base.MouseButton1Click:Connect(function()
-                if not Library:CanInteract() then
-                    return
-                end
-                if Chips.Multi then
-                    Chips.Value[Value] = (not Chips.Value[Value]) or nil
-                elseif Chips.Value == Value then
-                    if not Chips.AllowNull then
-                        return
-                    end
-                    Chips.Value = nil
-                else
-                    Chips.Value = Value
-                end
-                Chips:Display()
-                Chips:RunChanged()
-            end)
-
-            Chips.Buttons[Value] = { Base = Base, Label = Label, Stroke = ChipStroke }
-        end
-
-        Chips:Display(true)
-    end
-
-    function Chips:OnChanged(Func)
-        Chips.Changed = Func
-    end
-
-    function Chips:GetActiveValues()
-        local Active = {}
-        if Chips.Multi then
-            for _, Value in Chips.Values do
-                if Chips.Value[Value] then
-                    table.insert(Active, Value)
-                end
-            end
-        elseif Chips.Value ~= nil then
-            table.insert(Active, Chips.Value)
-        end
-        return Active
-    end
-
-    function Chips:SetValue(Value)
-        if Chips.Multi then
-            local Set = {}
-            if typeof(Value) == "table" then
-                for Key, Entry in Value do
-                    if typeof(Entry) == "boolean" then
-                        if Entry and table.find(Chips.Values, Key) then
-                            Set[Key] = true
-                        end
-                    elseif table.find(Chips.Values, Entry) then
-                        Set[Entry] = true
-                    end
-                end
-            elseif Value ~= nil and table.find(Chips.Values, Value) then
-                Set[Value] = true
-            end
-            Chips.Value = Set
-        elseif Value == nil or table.find(Chips.Values, Value) then
-            Chips.Value = Value
-        end
-        Chips:Display()
-        Chips:RunChanged()
-    end
-
-    function Chips:SetValues(Values)
-        Chips.Values = Values or {}
-        if Chips.Multi then
-            for Value in Chips.Value do
-                if not table.find(Chips.Values, Value) then
-                    Chips.Value[Value] = nil
-                end
-            end
-        elseif Chips.Value ~= nil and not table.find(Chips.Values, Chips.Value) then
-            Chips.Value = nil
-        end
-        Build()
-    end
-
-    function Chips:SetVisible(Visible)
-        Holder.Visible = Visible
-    end
-
-    -- Default: index, value, or a list (multi).
-    local function Resolve(Default)
-        if typeof(Default) == "number" and Chips.Values[Default] ~= nil then
-            return Chips.Values[Default]
-        end
-        return Default
-    end
-    if Info.Default ~= nil then
-        if Chips.Multi then
-            for _, Entry in (if typeof(Info.Default) == "table" then Info.Default else { Info.Default }) do
-                local Value = Resolve(Entry)
-                if table.find(Chips.Values, Value) then
-                    Chips.Value[Value] = true
-                end
-            end
-        else
-            local Value = Resolve(Info.Default)
-            if table.find(Chips.Values, Value) then
-                Chips.Value = Value
-            end
-        end
-    end
-
-    Build()
-    table.insert(Library.Updaters, function()
-        Chips:Display(true)
-    end)
-
-    setmetatable(Chips, { __index = Funcs })
-    RegisterElement(Idx, Chips)
-    return Chips
-end
-
 -- Rarity colors used by item cards (override per grid with Info.Rarities).
 Library.Rarities = {
     Common = Color3.fromRGB(165, 170, 182),
@@ -4905,9 +4755,16 @@ Library.Rarities = {
     Godly = Color3.fromRGB(225, 95, 210),
 }
 
+local ThumbnailTypes = {
+    Asset = true, Avatar = true, AvatarHeadShot = true, BadgeIcon = true, BundleThumbnail = true,
+    GameIcon = true, GamePass = true, GroupIcon = true, Outfit = true,
+}
+
 local function ItemImage(Item)
     if Item.AssetId then
-        return "rbxthumb://type=Asset&id=" .. tostring(Item.AssetId) .. "&w=150&h=150"
+        -- Catalog / game thumbnails: Thumbnail picks the type (Asset, BundleThumbnail, GamePass...).
+        local Kind = if ThumbnailTypes[Item.Thumbnail] then Item.Thumbnail else "Asset"
+        return "rbxthumb://type=" .. Kind .. "&id=" .. tostring(Item.AssetId) .. "&w=150&h=150"
     end
     if Item.Image then
         if tonumber(Item.Image) then
@@ -4918,8 +4775,69 @@ local function ItemImage(Item)
     return ""
 end
 
+-- Copies an in-game object for a viewport: scripts are stripped so nothing runs inside the UI.
+local function CloneForViewport(Source)
+    local Ok, Copy = pcall(function()
+        local Archivable = Source.Archivable
+        Source.Archivable = true
+        local Result = Source:Clone()
+        Source.Archivable = Archivable
+        return Result
+    end)
+    if not Ok or not Copy then
+        return nil
+    end
+    for _, Descendant in Copy:GetDescendants() do
+        if Descendant:IsA("LuaSourceContainer") then
+            Descendant:Destroy()
+        end
+    end
+    -- Tools, accessories and loose parts go in a model so they get one bounding box.
+    if Copy:IsA("Model") then
+        return Copy
+    end
+    local Holder = Instance.new("Model")
+    Copy.Parent = Holder
+    return Holder
+end
+
+-- A 3D picture of an in-game Model / Part / Tool / Accessory, framed to fit.
+-- Returns the ViewportFrame and a function that turns the model (degrees).
+local function ItemViewport(Item, Props)
+    local Copy = CloneForViewport(Item.Model or Item.Viewport)
+    if not Copy then
+        return nil
+    end
+
+    local Viewport = New("ViewportFrame", Props)
+    Viewport.Ambient = Item.Ambient or Color3.fromRGB(200, 200, 200)
+    Viewport.LightColor = Color3.fromRGB(255, 255, 255)
+    Viewport.LightDirection = Vector3.new(-1, -1, -1)
+
+    local Camera = Instance.new("Camera")
+    Camera.FieldOfView = Item.FieldOfView or 40
+    Camera.Parent = Viewport
+    Viewport.CurrentCamera = Camera
+    Copy.Parent = Viewport
+
+    local Center, Size = Copy:GetBoundingBox()
+    local Radius = math.max(Size.Magnitude / 2, 0.1)
+    local Distance = Radius / math.sin(math.rad(Camera.FieldOfView / 2)) * (Item.Zoom or 1)
+    local Pitch = math.rad(-(Item.Pitch or 15))
+    local BaseYaw = Item.Yaw or 35
+
+    local function Turn(Yaw)
+        local Rotation = CFrame.Angles(0, math.rad(BaseYaw + Yaw), 0) * CFrame.Angles(Pitch, 0, 0)
+        Camera.CFrame = CFrame.new(Center.Position) * Rotation * CFrame.new(0, 0, Distance)
+    end
+    Turn(0)
+    return Viewport, Turn
+end
+
 -- A grid of item cards: picture, name and rarity, tinted with the rarity color.
--- Items: { Name, Rarity?, Image? (asset id / url), AssetId? (catalog thumbnail), Value?, Color? }
+-- Items: { Name, Rarity?, Value?, Color?, and one picture source:
+--   Model = an in-game Model / Part / Tool / Accessory (shown in a 3D viewport),
+--   Image = asset id / url, or AssetId = a thumbnail (Thumbnail = "Asset", "BundleThumbnail", ...) }
 function Funcs:AddItemGrid(Idx, Info)
     Info = Library:Validate(Info, Templates.ItemGrid)
 
@@ -5069,16 +4987,53 @@ function Funcs:AddItemGrid(Idx, Info)
             Parent = Tint,
         })
 
-        local Picture = New("ImageLabel", {
+        local PictureProps = {
             AnchorPoint = Vector2.new(0.5, 0),
-            Image = ItemImage(Item),
+            BackgroundTransparency = 1,
             Position = UDim2.new(0.5, 0, 0, 14),
-            ScaleType = Enum.ScaleType.Fit,
             Size = UDim2.new(1, -28, 1, -72),
             ZIndex = 2,
             Parent = Frame,
-        })
+        }
+        local Picture, Turn
+        if Item.Model or Item.Viewport then
+            Picture, Turn = ItemViewport(Item, PictureProps)
+        end
+        if not Picture then
+            PictureProps.Image = ItemImage(Item)
+            PictureProps.ImageColor3 = Item.ImageColor or Color3.new(1, 1, 1)
+            PictureProps.ScaleType = Enum.ScaleType.Fit
+            if Item.ImageRectSize then
+                PictureProps.ImageRectOffset = Item.ImageRectOffset or Vector2.zero
+                PictureProps.ImageRectSize = Item.ImageRectSize
+            end
+            Picture = New("ImageLabel", PictureProps)
+        end
         local PictureScale = New("UIScale", { Parent = Picture })
+
+        -- 3D items turn slowly: always with Spin = true, otherwise while hovered.
+        local SpinMode = if Item.Spin ~= nil then Item.Spin else Info.Spin
+        local Spinning, SpinConnection, Yaw = false, nil, 0
+        local function SetSpinning(Value)
+            if not Turn or Value == Spinning then
+                return
+            end
+            Spinning = Value
+            if SpinConnection then
+                SpinConnection:Disconnect()
+                SpinConnection = nil
+            end
+            if Value then
+                SpinConnection = RunService.RenderStepped:Connect(function(Delta)
+                    Yaw = (Yaw + Delta * 40) % 360
+                    Turn(Yaw)
+                end)
+            end
+        end
+        Frame.Destroying:Connect(function()
+            SetSpinning(false)
+        end)
+        SetSpinning(SpinMode == true)
 
         New("TextLabel", {
             AnchorPoint = Vector2.new(0, 1),
@@ -5107,9 +5062,15 @@ function Funcs:AddItemGrid(Idx, Info)
         OnHover(Frame, function()
             Tween(PictureScale, Library.FastTweenInfo, { Scale = 1.07 })
             Tween(Tint, Library.FastTweenInfo, { BackgroundTransparency = 0 })
+            if SpinMode == "Hover" then
+                SetSpinning(true)
+            end
         end, function()
             Tween(PictureScale, Library.FastTweenInfo, { Scale = 1 })
             Tween(Tint, Library.FastTweenInfo, { BackgroundTransparency = 0.35 })
+            if SpinMode == "Hover" then
+                SetSpinning(false)
+            end
         end)
 
         Frame.MouseButton1Click:Connect(function()
@@ -5409,7 +5370,7 @@ function Library:GetConfigData()
             table.insert(Objects, { type = "Input", idx = Idx, text = Option.Value })
         elseif Option.Type == "ThemePicker" then
             table.insert(Objects, { type = "ThemePicker", idx = Idx, value = Option.Value })
-        elseif Option.Type == "Chips" or Option.Type == "ItemGrid" then
+        elseif Option.Type == "ItemGrid" then
             local Value = Option.Value
             if Option.Multi then
                 Value = Option:GetActiveValues()
@@ -5446,7 +5407,7 @@ function Library:ApplyConfigEntry(Entry)
             Object:SetValue(Entry.text)
         elseif Entry.type == "ThemePicker" then
             Object:SetValue(Entry.value)
-        elseif Entry.type == "Chips" or Entry.type == "ItemGrid" then
+        elseif Entry.type == "ItemGrid" then
             Object:SetValue(Entry.value)
         end
     end)
@@ -5750,30 +5711,21 @@ function Library:CreateWindow(WindowInfo)
             Footer = true, Lines = true, TabInfo = true, Title = "Icon", Subtitle = false,
             Profile = false, Panel = false, Corner = WindowInfo.CornerRadius, PagePadding = 10,
         },
-        -- Tabs as a strip of pills under the title, no sidebar.
-        Topbar = {
-            TopHeight = 52, Sidebar = 0, Strip = 46, TabMode = "Strip", TabHeight = 32,
-            Footer = true, Lines = true, TabInfo = false, Title = "Left", Subtitle = false,
-            Profile = false, Panel = false, Corner = WindowInfo.CornerRadius, PagePadding = 10,
-        },
     }
-    Library.LayoutNames = { "Modern", "Classic", "Compact", "Topbar" }
+    Library.LayoutNames = { "Modern", "Classic", "Compact" }
 
     local LayoutName = if Layouts[WindowInfo.Layout] then WindowInfo.Layout else "Modern"
     local Layout = Layouts[LayoutName]
     Window.Layout = LayoutName
     local ApplyLayout -- defined once every piece exists
+    local ApplyBodyVisibility
 
-    -- Content edges for the current layout: top, bottom, left, and where a tab strip starts.
+    -- Content edges for the current layout: top, bottom and left.
     local function Geometry()
         local TopEdge = Layout.TopHeight + (if Layout.Lines then 1 else 0)
-        local StripTop = TopEdge
-        if Layout.Strip then
-            TopEdge = StripTop + Layout.Strip + 1
-        end
         local BottomEdge = if Layout.Footer then 21 else 0
-        local LeftEdge = if Layout.Sidebar > 0 then Layout.Sidebar + (if Layout.Lines then 1 else 0) else 0
-        return TopEdge, BottomEdge, LeftEdge, StripTop
+        local LeftEdge = Layout.Sidebar + (if Layout.Lines then 1 else 0)
+        return TopEdge, BottomEdge, LeftEdge
     end
 
     --// Root holds the shadow + main frame so both move together \\--
@@ -6071,7 +6023,6 @@ function Library:CreateWindow(WindowInfo)
     }))
     local SidebarList = List(Sidebar, 4)
     local SidebarPadding = Padding(Sidebar, 8, 8, 10, 10)
-    local StripLine = MakeLine({ Size = UDim2.new(1, 0, 0, 1), Parent = Main })
 
     local SidebarOrder = 0
     local function NextSidebarOrder()
@@ -6248,6 +6199,7 @@ function Library:CreateWindow(WindowInfo)
     Window.Container = Container
     Window.Sidebar = Sidebar
     Window.Profile = Profile
+    Window.BottomBar = BottomBar
     Library.Window = Window
 
     function Window:SetTitle(Text)
@@ -6331,7 +6283,6 @@ function Library:CreateWindow(WindowInfo)
         })
         Corner(TabButton, 8)
         local ButtonStroke = Stroke(TabButton, "OutlineColor", 1)
-        local TabInset = New("UIPadding", { Parent = TabButton })
 
         -- Compact layout shows tab names as tooltips.
         local TabTooltip = Library:AddTooltip(nil, nil, TabButton)
@@ -6476,12 +6427,8 @@ function Library:CreateWindow(WindowInfo)
         -- Restyle this tab's button and page for the current layout.
         function Tab:ApplyLayout()
             local Mode = Layout.TabMode
-            local Strip = Mode == "Strip"
 
-            TabButton.AutomaticSize = if Strip then Enum.AutomaticSize.X else Enum.AutomaticSize.None
-            TabButton.Size = if Strip then UDim2.fromOffset(0, Layout.TabHeight) else UDim2.new(1, 0, 0, Layout.TabHeight)
-            TabInset.PaddingRight = UDim.new(0, if Strip then 14 else 0)
-            Indicator.Visible = not Strip
+            TabButton.Size = UDim2.new(1, 0, 0, Layout.TabHeight)
             TabTooltip.Text = if Mode == "Icons" then Name else nil
 
             if Mode == "Icons" then
@@ -6499,20 +6446,15 @@ function Library:CreateWindow(WindowInfo)
             else
                 if TabIcon then
                     TabIcon.AnchorPoint = Vector2.new(0, 0.5)
-                    TabIcon.Position = UDim2.new(0, if Strip then 12 else 14, 0.5, 0)
+                    TabIcon.Position = UDim2.new(0, 14, 0.5, 0)
                 end
-                local TextX = if TabIcon then (if Strip then 38 else 42) else 14
+                local TextX = if TabIcon then 42 else 14
                 TabLabel.Visible = true
                 TabLabel.Text = Name
                 TabLabel.TextXAlignment = Enum.TextXAlignment.Left
                 TabLabel.Position = UDim2.fromOffset(TextX, 0)
-                if Strip then
-                    TabLabel.AutomaticSize = Enum.AutomaticSize.X
-                    TabLabel.Size = UDim2.fromScale(0, 1)
-                else
-                    TabLabel.AutomaticSize = Enum.AutomaticSize.None
-                    TabLabel.Size = UDim2.new(1, -TextX - 8, 1, 0)
-                end
+                TabLabel.AutomaticSize = Enum.AutomaticSize.None
+                TabLabel.Size = UDim2.new(1, -TextX - 8, 1, 0)
             end
             TabLabel.TextSize = if Layout.TabHeight >= 40 then 15 else 14
 
@@ -6767,6 +6709,19 @@ function Library:CreateWindow(WindowInfo)
         return Minimized
     end
 
+    -- Everything under the top bar. Bottom-anchored pieces (profile card, footer) would
+    -- otherwise slide up over the title while the window is folded.
+    ApplyBodyVisibility = function()
+        local Open = not Minimized
+        Sidebar.Visible = Open
+        SideLine.Visible = Open and Layout.Lines
+        Profile.Visible = Open and Layout.Profile == true
+        Container.Visible = Open
+        BottomLine.Visible = Open and Layout.Footer == true
+        BottomBar.Visible = Open and Layout.Footer == true
+        TopLine.Visible = Open and Layout.Lines == true
+    end
+
     -- Folds the window up to its top bar (the top edge stays where it is).
     function Window:SetMinimized(Value)
         Value = Value == true
@@ -6795,6 +6750,7 @@ function Library:CreateWindow(WindowInfo)
         if Grip then
             Grip.Visible = not Value
         end
+        ApplyBodyVisibility()
         MinimizeControl:SetActive(Value)
     end
 
@@ -7217,8 +7173,7 @@ function Library:CreateWindow(WindowInfo)
 
     --// Apply the current layout to every piece of the window \\--
     ApplyLayout = function()
-        local TopEdge, BottomEdge, LeftEdge, StripTop = Geometry()
-        local Strip = Layout.TabMode == "Strip"
+        local TopEdge, BottomEdge, LeftEdge = Geometry()
 
         local Radius = UDim.new(0, Layout.Corner)
         MainCorner.CornerRadius = Radius
@@ -7229,7 +7184,6 @@ function Library:CreateWindow(WindowInfo)
 
         --// Top bar + title \\--
         TopBar.Size = UDim2.new(1, 0, 0, Layout.TopHeight)
-        TopLine.Visible = Layout.Lines
         TopLine.Position = UDim2.fromOffset(0, Layout.TopHeight)
 
         local TitleMode = Layout.Title
@@ -7257,43 +7211,19 @@ function Library:CreateWindow(WindowInfo)
         TabInfo.Position = UDim2.fromOffset(LeftEdge, 0)
         TabInfo.Size = UDim2.new(1, -LeftEdge - ControlsWidth(), 1, 0)
 
-        --// Tabs: sidebar list, icon rail or top strip \\--
+        --// Tabs: sidebar list or icon rail \\--
         local ProfileHeight = if Layout.Profile then 64 else 0
-        if Strip then
-            Sidebar.Position = UDim2.fromOffset(0, StripTop)
-            Sidebar.Size = UDim2.new(1, 0, 0, Layout.Strip)
-            Sidebar.ScrollingDirection = Enum.ScrollingDirection.X
-            Sidebar.AutomaticCanvasSize = Enum.AutomaticSize.X
-            SidebarList.FillDirection = Enum.FillDirection.Horizontal
-            SidebarList.VerticalAlignment = Enum.VerticalAlignment.Center
-            SidebarList.Padding = UDim.new(0, 6)
-            SidebarPadding.PaddingTop = UDim.new(0, 0)
-            SidebarPadding.PaddingBottom = UDim.new(0, 0)
-            SidebarPadding.PaddingLeft = UDim.new(0, 12)
-            SidebarPadding.PaddingRight = UDim.new(0, 12)
-        else
-            Sidebar.Position = UDim2.fromOffset(0, TopEdge)
-            Sidebar.Size = UDim2.new(0, Layout.Sidebar, 1, -TopEdge - BottomEdge - ProfileHeight)
-            Sidebar.ScrollingDirection = Enum.ScrollingDirection.Y
-            Sidebar.AutomaticCanvasSize = Enum.AutomaticSize.Y
-            SidebarList.FillDirection = Enum.FillDirection.Vertical
-            SidebarList.VerticalAlignment = Enum.VerticalAlignment.Top
-            SidebarList.Padding = UDim.new(0, if Layout.TabMode == "Icons" then 6 else 4)
-            local Side = if Layout.TabMode == "Icons" then 10 else 12
-            SidebarPadding.PaddingTop = UDim.new(0, 8)
-            SidebarPadding.PaddingBottom = UDim.new(0, 8)
-            SidebarPadding.PaddingLeft = UDim.new(0, Side)
-            SidebarPadding.PaddingRight = UDim.new(0, Side)
-        end
+        Sidebar.Position = UDim2.fromOffset(0, TopEdge)
+        Sidebar.Size = UDim2.new(0, Layout.Sidebar, 1, -TopEdge - BottomEdge - ProfileHeight)
+        SidebarList.Padding = UDim.new(0, if Layout.TabMode == "Icons" then 6 else 4)
+        local Side = if Layout.TabMode == "Icons" then 10 else 12
+        SidebarPadding.PaddingLeft = UDim.new(0, Side)
+        SidebarPadding.PaddingRight = UDim.new(0, Side)
         Sidebar.CanvasPosition = Vector2.new(0, 0)
 
-        StripLine.Visible = Strip
-        StripLine.Position = UDim2.fromOffset(0, StripTop + (Layout.Strip or 0))
-        SideLine.Visible = Layout.Lines and Layout.Sidebar > 0
         SideLine.Position = UDim2.fromOffset(Layout.Sidebar, TopEdge)
         SideLine.Size = UDim2.new(0, 1, 1, -TopEdge - BottomEdge)
 
-        Profile.Visible = Layout.Profile == true
         Profile.Position = UDim2.new(0, 0, 1, -BottomEdge - ProfileHeight)
         Profile.Size = UDim2.new(0, Layout.Sidebar, 0, ProfileHeight)
 
@@ -7303,8 +7233,6 @@ function Library:CreateWindow(WindowInfo)
         ContainerCorner.CornerRadius = UDim.new(0, if Layout.Panel then 16 else 0)
         ContainerStroke.Enabled = Layout.Panel == true
 
-        BottomLine.Visible = Layout.Footer
-        BottomBar.Visible = Layout.Footer
 
         --// Settings panel: everything below the top bar \\--
         PanelTop = Layout.TopHeight + (if Layout.Lines then 1 else 0)
@@ -7320,6 +7248,7 @@ function Library:CreateWindow(WindowInfo)
         for _, Tab in Window.Tabs do
             Tab:ApplyLayout()
         end
+        ApplyBodyVisibility()
     end
     ApplyLayout()
 

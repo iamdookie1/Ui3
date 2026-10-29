@@ -17,7 +17,7 @@ local Window = Library:CreateWindow({
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	-- DPIScale = 100, -- starting DPI in percent; players can change it in settings (saved in configs)
 	-- Theme = "Violet", -- starting theme: Monochrome, Violet, Ocean, Magenta, Emerald, Ember, Aurora
-	-- Layout = "Modern", -- starting layout: Modern, Classic, Compact, Topbar (players can switch in settings)
+	-- Layout = "Modern", -- starting layout: Modern, Classic, Compact (players can switch in settings)
 	-- DPIScale = "Auto", -- default: picks the scale from the screen size
 })
 
@@ -269,8 +269,19 @@ DropdownGroupBox:AddDropdown("MyDisabledDropdown", {
 	Text = "A disabled dropdown",
 })
 
---// Items tab: search, inline dropdowns, chips and item cards \\--
+--// Items tab: search, inline dropdowns and item cards \\--
+-- Item pictures: Model = any in-game Model / Part / Tool / Accessory (rendered in 3D),
+-- Image = an image id or url, AssetId = a catalog thumbnail.
+local function MakeCrystal()
+	local Crystal = Instance.new("Part")
+	Crystal.Size = Vector3.new(1, 2.4, 1)
+	Crystal.Material = Enum.Material.Neon
+	Crystal.Color = Color3.fromRGB(170, 95, 255)
+	return Crystal
+end
+
 local Catalog = {
+	{ Name = "Void Crystal", Model = MakeCrystal(), Rarity = "Epic", Type = "Hat", Spin = true },
 	{ Name = "Dominus Empyreus", AssetId = 21070012, Rarity = "Godly", Type = "Hat" },
 	{ Name = "Domino Crown", AssetId = 1031429, Rarity = "Godly", Type = "Hat" },
 	{ Name = "Sparkle Time Fedora", AssetId = 1285307, Rarity = "Ancient", Type = "Hat" },
@@ -294,6 +305,15 @@ local Search = Browse:AddSearchBox("ItemSearch", {
 
 -- Groupbox:AddRow() puts elements side by side; Inline dropdowns read "Type: Hat"
 local Filters = Browse:AddRow()
+-- Style = "Chips" opens a grid of pills instead of a list
+Filters:AddDropdown("ItemRarity", {
+	Text = "Rarity",
+	Inline = true,
+	Style = "Chips",
+	Columns = 3,
+	Values = { "All", "Godly", "Ancient", "Legendary", "Epic", "Rare", "Common" },
+	Default = "All",
+})
 Filters:AddDropdown("ItemType", {
 	Text = "Type",
 	Inline = true,
@@ -307,18 +327,11 @@ Filters:AddDropdown("ItemSort", {
 	Default = "Rarity",
 })
 
--- Groupbox:AddChips(Index, Options): a grid of pills, the selected one is filled
-local RarityChips = Browse:AddChips("ItemRarity", {
-	Values = { "All", "Godly", "Ancient", "Legendary", "Rare", "Common" },
-	Default = "All",
-	Columns = 3,
-})
-
 -- Groupbox:AddHeader(Title, Subtitle)
 local ItemsHeader = Browse:AddHeader("Items", "")
 
 -- Groupbox:AddItemGrid(Index, Options): picture, name and rarity on each card
-local RarityOrder = { Godly = 1, Ancient = 2, Legendary = 3, Rare = 4, Common = 5 }
+local RarityOrder = { Godly = 1, Ancient = 2, Legendary = 3, Epic = 4, Rare = 5, Common = 6 }
 local Grid = Browse:AddItemGrid("PickedItem", {
 	Items = Catalog,
 	Filter = function(Item)
@@ -355,7 +368,7 @@ Options.ItemType:OnChanged(function()
 	UpdateHeader()
 end)
 Options.ItemSort:OnChanged(SortItems)
-RarityChips:OnChanged(function(Rarity)
+Options.ItemRarity:OnChanged(function(Rarity)
 	Grid:SetRarityFilter(Rarity)
 	UpdateHeader()
 end)
