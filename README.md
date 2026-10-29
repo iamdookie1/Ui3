@@ -6,11 +6,11 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 
 ## Features
 
-- **4 layouts** players can switch between in settings: Modern, Classic, Compact and Topbar
+- **3 layouts** players can switch between in settings: Modern, Classic and Compact
 - Sidebar tabs with section headings, groupboxes in two columns, and **big groupboxes** that span both columns
 - Toggles, checkboxes, buttons (with sub-buttons and double-click confirm), labels, dividers, sliders, dropdowns (single, multi, searchable, player and team lists), text inputs
 - Color pickers and keybind pickers that attach to toggles and labels
-- Catalog-style elements: search bar, inline dropdowns in rows, chip selectors, section headers and item card grids
+- Catalog-style elements: search bar, inline dropdowns in rows, chip-grid dropdowns, section headers and item card grids with 3D in-game models
 - Big groupbox only: progress bars, stat cards and a log console
 - Notifications and tooltips
 - A built-in **settings panel** (gear icon, top right) with menu keybind, layout, DPI scale, themes, configs and unload
@@ -91,7 +91,7 @@ local Window = Library:CreateWindow({
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	DPIScale = "Auto",          -- "Auto" (from the screen size) or a percent, e.g. 125
 	Theme = nil,                -- starting theme, e.g. "Violet" (players can change it in settings)
-	Layout = "Modern",          -- Modern, Classic, Compact or Topbar (players can change it in settings)
+	Layout = "Modern",          -- Modern, Classic or Compact (players can change it in settings)
 	ShowSettings = true,        -- the gear icon, layout button and settings panel
 	ShowControls = true,        -- minimize and close buttons
 	ShowProfile = true,         -- avatar card at the bottom of the sidebar (Modern layout)
@@ -105,7 +105,7 @@ Window:SetSubtitle("New subtitle")
 Window:SetFooter("New footer")
 Window:OpenSettings()
 Window:CloseSettings()
-Window:SetLayout("Topbar")
+Window:SetLayout("Compact")
 Window:SetMinimized(true)   -- fold the window up to its top bar
 ```
 
@@ -116,7 +116,6 @@ Window:SetMinimized(true)   -- fold the window up to its top bar
 | `Modern` | Default. Big rounded window, title with subtitle, sidebar with a profile card at the bottom, content on a floating rounded panel |
 | `Classic` | The original Obsidian look: top bar, sidebar, divider lines and a footer |
 | `Compact` | Icon-only sidebar for the most content space; tab names show as tooltips |
-| `Topbar` | No sidebar: tabs are a row of pills under the title |
 
 Players switch layouts from settings or with the layout button in the top right, and the choice is saved in configs.
 
@@ -241,6 +240,9 @@ Box:AddDropdown("MyDropdown", {
 	AllowNull = false,      -- clicking the selected value clears it
 	Searchable = false,     -- adds a search box
 	MaxVisibleDropdownItems = 8,
+	Inline = false,         -- no label above; the box reads "Text: Value"
+	Style = "List",         -- "Chips": the popup is a grid of pills (see below)
+	Columns = 3,            -- pills per row for Style = "Chips"
 	DisabledValues = {},    -- shown but can't be picked
 	FormatDisplayValue = function(Value) return Value end,
 	Callback = function(Value) end,
@@ -255,6 +257,19 @@ Box:AddDropdown("Weapon", {
 -- Fills itself with players (or teams) and stays up to date
 Box:AddDropdown("Target", { SpecialType = "Player", ExcludeLocalPlayer = true, Text = "Target" })
 Box:AddDropdown("Team", { SpecialType = "Team", Text = "Team" })
+```
+
+A chip dropdown opens a grid of pills instead of a list; the selected ones are filled with the accent:
+
+```lua
+Box:AddDropdown("Rarity", {
+	Text = "Rarity",
+	Inline = true,
+	Style = "Chips",
+	Columns = 3,
+	Values = { "All", "Godly", "Ancient", "Legendary", "Rare", "Common" },
+	Default = "All",
+})
 ```
 
 Methods: `SetValue`, `SetValues`, `AddValues`, `GetActiveValues(ReturnCount)`, `SetDisabledValues`, `AddDisabledValues`, `SetText`, `SetDisabled`, `SetVisible`, `OnChanged`.
@@ -340,23 +355,6 @@ local Search = Box:AddSearchBox("Search", {
 
 Methods: `SetValue`, `SetPlaceholder`, `SetVisible`, `OnChanged`. Search text isn't saved in configs.
 
-### Chips
-
-A grid of pills. The selected one is filled with the accent.
-
-```lua
-Box:AddChips("Rarity", {
-	Values = { "All", "Godly", "Ancient", "Legendary", "Rare", "Common" },
-	Default = "All",
-	Columns = 3,
-	Multi = false,
-	AllowNull = false,
-	Callback = function(Value) end,
-})
-```
-
-Methods: `SetValue`, `SetValues`, `GetActiveValues`, `SetVisible`, `OnChanged`.
-
 ### Header
 
 ```lua
@@ -371,10 +369,15 @@ Cards with a picture, name and rarity, tinted with the rarity color. As many col
 ```lua
 local Grid = Box:AddItemGrid("PickedItem", {
 	Items = {
-		{ Name = "Dominus Empyreus", AssetId = 21070012, Rarity = "Godly" }, -- AssetId shows the catalog thumbnail
-		{ Name = "Sword", Image = 123456789, Rarity = "Rare", Value = "sword_01" }, -- or any image id
+		-- Model: any in-game Model / Part / Tool / Accessory, rendered in 3D (it's cloned, scripts removed)
+		{ Name = "Sword", Model = game.ReplicatedStorage.Items.Sword, Rarity = "Legendary", Value = "sword_01" },
+		-- AssetId: a thumbnail (Thumbnail = "Asset" by default, or "BundleThumbnail", "GamePass", ...)
+		{ Name = "Dominus Empyreus", AssetId = 21070012, Rarity = "Godly" },
+		-- Image: any image id or url (ImageRectOffset / ImageRectSize for sprite sheets, ImageColor to tint)
+		{ Name = "Potion", Image = 123456789, Rarity = "Rare" },
 	},
 	Multi = false,
+	Spin = "Hover",                          -- 3D items turn while hovered; true = always, false = never
 	Filter = function(Item) return true end, -- optional extra filter
 	Callback = function(Value) end,          -- Value is the item's Value (or Name)
 })
@@ -383,6 +386,8 @@ Grid:SetFilter("dom")         -- name search
 Grid:SetRarityFilter("Godly") -- or "All"
 print(Grid:GetVisibleCount())
 ```
+
+3D items can also set `Spin`, `Yaw`, `Pitch` (camera angles in degrees), `Zoom` (1 = fit, bigger = further), `FieldOfView` and `Ambient`.
 
 Rarity colors come from `Library.Rarities` (Common, Uncommon, Rare, Epic, Legendary, Mythic, Ancient, Godly). Override them per grid with `Rarities = { ... }`. Methods: `SetItems`, `AddItems`, `SetFilter`, `SetRarityFilter`, `GetVisibleCount`, `SetValue`, `GetActiveValues`, `Display`, `OnChanged`.
 
@@ -458,7 +463,7 @@ Extra:AddToggle("Watermark", { Text = "Show watermark" })
 
 ## Configs
 
-Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, chips, item grid picks, color pickers, keybinds, inputs, and the menu keybind, layout, DPI and theme from settings.
+Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, item grid picks, color pickers, keybinds, inputs, and the menu keybind, layout, DPI and theme from settings.
 
 Autoload applies saved values the moment each element is created. That way it works even if your script creates elements after a wait. Loading a value runs that element's callback, so features turn back on.
 
