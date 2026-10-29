@@ -1,7 +1,6 @@
 -- Ui3 example: Obsidian-style API with the Syde theme.
--- Swap the branch name for "main" once this is merged.
 
-local repo = "https://raw.githubusercontent.com/iamdookie1/Ui3/ccr-26bcb4bb-7izgsr/"
+local repo = "https://raw.githubusercontent.com/iamdookie1/Ui3/main/"
 local Library = loadstring(game:HttpGet(repo .. "Ui.lua"))()
 
 local Options = Library.Options
@@ -9,6 +8,7 @@ local Toggles = Library.Toggles
 
 local Window = Library:CreateWindow({
 	Title = "Ui3",
+	Subtitle = "New elements demo", -- shown under the title in the Modern layout
 	Footer = "version: example",
 	Icon = "sparkles", -- lucide icon name or an asset id
 	Center = true,
@@ -17,15 +17,20 @@ local Window = Library:CreateWindow({
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	-- DPIScale = 100, -- starting DPI in percent; players can change it in settings (saved in configs)
 	-- Theme = "Violet", -- starting theme: Monochrome, Violet, Ocean, Magenta, Emerald, Ember, Aurora
+	-- Layout = "Modern", -- starting layout: Modern, Classic, Compact, Topbar (players can switch in settings)
+	-- DPIScale = "Auto", -- default: picks the scale from the screen size
 })
 
 -- Window:AddTab(Name, Icon, Description)
 -- Icons come from https://lucide.dev/
-local Tabs = {
-	Main = Window:AddTab("Main", "user", "Toggles, buttons, sliders and dropdowns"),
-	Dashboard = Window:AddTab("Dashboard", "layout-dashboard", "Big groupboxes"),
-	Visuals = Window:AddTab("Visuals", "eye", "Color pickers on labels"),
-}
+local Tabs = {}
+Tabs.Main = Window:AddTab("Main", "house", "Toggles, buttons, sliders and dropdowns")
+Tabs.Dashboard = Window:AddTab("Dashboard", "layout-dashboard", "Big groupboxes")
+
+-- Window:AddSection(Text) puts a small heading between tabs in the sidebar
+Window:AddSection("Showcase")
+Tabs.Items = Window:AddTab("Items", "gem", "Search, filters, chips and item cards")
+Tabs.Visuals = Window:AddTab("Visuals", "eye", "Color pickers on labels")
 
 -- Menu keybind, DPI scale, themes, configs (save / load / autoload) and Unload are already
 -- in the settings panel: the gear icon in the top right corner. Nothing to build here.
@@ -263,6 +268,98 @@ DropdownGroupBox:AddDropdown("MyDisabledDropdown", {
 	Disabled = true,
 	Text = "A disabled dropdown",
 })
+
+--// Items tab: search, inline dropdowns, chips and item cards \\--
+local Catalog = {
+	{ Name = "Dominus Empyreus", AssetId = 21070012, Rarity = "Godly", Type = "Hat" },
+	{ Name = "Domino Crown", AssetId = 1031429, Rarity = "Godly", Type = "Hat" },
+	{ Name = "Sparkle Time Fedora", AssetId = 1285307, Rarity = "Ancient", Type = "Hat" },
+	{ Name = "Red Sparkle Time Fedora", AssetId = 72082328, Rarity = "Ancient", Type = "Hat" },
+	{ Name = "Valkyrie Helm", AssetId = 1365767, Rarity = "Legendary", Type = "Hat" },
+	{ Name = "Fiery Horns of the Netherworld", AssetId = 215718515, Rarity = "Legendary", Type = "Hat" },
+	{ Name = "Clockwork's Shades", AssetId = 11748356, Rarity = "Rare", Type = "Face" },
+	{ Name = "Bighead", AssetId = 1048037, Rarity = "Common", Type = "Hat" },
+}
+
+local Browse = Tabs.Items:AddBigGroupbox({
+	Name = "Browse",
+	Description = "Everything here works in normal groupboxes too",
+	IconName = "search",
+})
+
+-- Groupbox:AddSearchBox(Index, Options)
+local Search = Browse:AddSearchBox("ItemSearch", {
+	Placeholder = "Search items...",
+})
+
+-- Groupbox:AddRow() puts elements side by side; Inline dropdowns read "Type: Hat"
+local Filters = Browse:AddRow()
+Filters:AddDropdown("ItemType", {
+	Text = "Type",
+	Inline = true,
+	Values = { "All", "Hat", "Face" },
+	Default = "All",
+})
+Filters:AddDropdown("ItemSort", {
+	Text = "Sort",
+	Inline = true,
+	Values = { "Rarity", "Name" },
+	Default = "Rarity",
+})
+
+-- Groupbox:AddChips(Index, Options): a grid of pills, the selected one is filled
+local RarityChips = Browse:AddChips("ItemRarity", {
+	Values = { "All", "Godly", "Ancient", "Legendary", "Rare", "Common" },
+	Default = "All",
+	Columns = 3,
+})
+
+-- Groupbox:AddHeader(Title, Subtitle)
+local ItemsHeader = Browse:AddHeader("Items", "")
+
+-- Groupbox:AddItemGrid(Index, Options): picture, name and rarity on each card
+local RarityOrder = { Godly = 1, Ancient = 2, Legendary = 3, Rare = 4, Common = 5 }
+local Grid = Browse:AddItemGrid("PickedItem", {
+	Items = Catalog,
+	Filter = function(Item)
+		local Type = Options.ItemType and Options.ItemType.Value or "All"
+		return Type == "All" or Item.Type == Type
+	end,
+	Callback = function(Value)
+		print("[cb] Picked item:", Value)
+	end,
+})
+
+local function UpdateHeader()
+	ItemsHeader:SetSubtitle(Grid:GetVisibleCount() .. " items, click one to pick it")
+end
+
+local function SortItems()
+	local Sorted = table.clone(Catalog)
+	table.sort(Sorted, function(A, B)
+		if Options.ItemSort.Value == "Name" then
+			return A.Name < B.Name
+		end
+		return RarityOrder[A.Rarity] < RarityOrder[B.Rarity]
+	end)
+	Grid:SetItems(Sorted)
+	UpdateHeader()
+end
+
+Search:OnChanged(function(Text)
+	Grid:SetFilter(Text)
+	UpdateHeader()
+end)
+Options.ItemType:OnChanged(function()
+	Grid:Display()
+	UpdateHeader()
+end)
+Options.ItemSort:OnChanged(SortItems)
+RarityChips:OnChanged(function(Rarity)
+	Grid:SetRarityFilter(Rarity)
+	UpdateHeader()
+end)
+SortItems()
 
 --// Visuals tab \\--
 local ColorBox = Tabs.Visuals:AddLeftGroupbox("Colors", "brush")

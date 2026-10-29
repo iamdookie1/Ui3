@@ -6,16 +6,19 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 
 ## Features
 
-- Sidebar tabs, groupboxes in two columns, and **big groupboxes** that span both columns
+- **4 layouts** players can switch between in settings: Modern, Classic, Compact and Topbar
+- Sidebar tabs with section headings, groupboxes in two columns, and **big groupboxes** that span both columns
 - Toggles, checkboxes, buttons (with sub-buttons and double-click confirm), labels, dividers, sliders, dropdowns (single, multi, searchable, player and team lists), text inputs
 - Color pickers and keybind pickers that attach to toggles and labels
+- Catalog-style elements: search bar, inline dropdowns in rows, chip selectors, section headers and item card grids
 - Big groupbox only: progress bars, stat cards and a log console
 - Notifications and tooltips
-- A built-in **settings panel** (gear icon, top right) with menu keybind, DPI scale, themes, configs and unload
+- A built-in **settings panel** (gear icon, top right) with menu keybind, layout, DPI scale, themes, configs and unload
+- Window buttons in the top right: switch layout, settings, minimize and close
 - **Configs** that save, load and **autoload**, applied as each element is created, so they work even if your script creates elements late
-- **DPI scaling** from 50% to 200%, saved in configs
+- **Auto scaling** from the screen size (bigger on 1440p / 4K, smaller on small screens, always fits), or a fixed 50% to 200%, saved in configs
 - While you drag a slider, color picker or the window, every other element ignores hovers and clicks
-- **7 animated themes**: Monochrome, Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
+- **7 animated themes**: Monochrome (black and white), Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
 - A light sweeps across accent fills and another travels around the window border
 
 ## Quick start
@@ -75,6 +78,7 @@ The recommended pattern is to build the UI first and hook up `OnChanged` afterwa
 ```lua
 local Window = Library:CreateWindow({
 	Title = "Ui3",
+	Subtitle = nil,             -- shown under the title in the Modern layout (defaults to Footer)
 	Footer = "",
 	Icon = nil,                 -- lucide name or asset id
 	Size = UDim2.fromOffset(720, 560),
@@ -85,23 +89,46 @@ local Window = Library:CreateWindow({
 	SidebarWidth = 190,
 	CornerRadius = 10,
 	ToggleKeybind = Enum.KeyCode.RightControl,
-	DPIScale = nil,             -- starting DPI in percent, e.g. 125
+	DPIScale = "Auto",          -- "Auto" (from the screen size) or a percent, e.g. 125
 	Theme = nil,                -- starting theme, e.g. "Violet" (players can change it in settings)
-	ShowSettings = true,        -- the gear icon and settings panel
+	Layout = "Modern",          -- Modern, Classic, Compact or Topbar (players can change it in settings)
+	ShowSettings = true,        -- the gear icon, layout button and settings panel
+	ShowControls = true,        -- minimize and close buttons
+	ShowProfile = true,         -- avatar card at the bottom of the sidebar (Modern layout)
 	ConfigFolder = nil,         -- defaults to "Ui3/<Title>"
 	AutoLoad = true,            -- load the autoload config on start
 	Font = nil,                 -- Font or Enum.Font
 })
 
 Window:SetTitle("New title")
+Window:SetSubtitle("New subtitle")
 Window:SetFooter("New footer")
 Window:OpenSettings()
 Window:CloseSettings()
+Window:SetLayout("Topbar")
+Window:SetMinimized(true)   -- fold the window up to its top bar
 ```
+
+### Layouts
+
+| Layout | Look |
+| --- | --- |
+| `Modern` | Default. Big rounded window, title with subtitle, sidebar with a profile card at the bottom, content on a floating rounded panel |
+| `Classic` | The original Obsidian look: top bar, sidebar, divider lines and a footer |
+| `Compact` | Icon-only sidebar for the most content space; tab names show as tooltips |
+| `Topbar` | No sidebar: tabs are a row of pills under the title |
+
+Players switch layouts from settings or with the layout button in the top right, and the choice is saved in configs.
+
+### Scaling
+
+By default (`DPIScale = "Auto"`) the UI picks its scale from the screen size: about 100% on 1080p, bigger on 1440p and 4K, smaller on small screens, and never so big that the window wouldn't fit. It keeps following the screen if the Roblox window is resized. Players can pick a fixed scale in settings instead.
 
 ## Tabs and groupboxes
 
 ```lua
+Window:AddSection("Demo") -- a small heading between tabs in the sidebar
+
 local Tab = Window:AddTab("Main", "user", "Optional description shown in the top bar")
 -- or Window:AddTab({ Name = "Main", Icon = "user", Description = "..." })
 
@@ -289,6 +316,76 @@ print(Options.FlyKey:GetState())
 
 Methods: `GetState`, `SetValue({ Key, Mode })`, `OnChanged`, `OnClick`.
 
+### Rows
+
+Elements added to a row sit side by side and share the width.
+
+```lua
+local Filters = Box:AddRow()
+Filters:AddDropdown("Type", { Text = "Type", Inline = true, Values = { "All", "Hat", "Face" }, Default = "All" })
+Filters:AddDropdown("Sort", { Text = "Sort", Inline = true, Values = { "Rarity", "Name" }, Default = "Rarity" })
+```
+
+`Inline = true` on a dropdown drops the label above it, so the box reads "Type: All".
+
+### Search box
+
+```lua
+local Search = Box:AddSearchBox("Search", {
+	Placeholder = "Search items...",
+	Icon = "search",
+	Callback = function(Text) end,
+})
+```
+
+Methods: `SetValue`, `SetPlaceholder`, `SetVisible`, `OnChanged`. Search text isn't saved in configs.
+
+### Chips
+
+A grid of pills. The selected one is filled with the accent.
+
+```lua
+Box:AddChips("Rarity", {
+	Values = { "All", "Godly", "Ancient", "Legendary", "Rare", "Common" },
+	Default = "All",
+	Columns = 3,
+	Multi = false,
+	AllowNull = false,
+	Callback = function(Value) end,
+})
+```
+
+Methods: `SetValue`, `SetValues`, `GetActiveValues`, `SetVisible`, `OnChanged`.
+
+### Header
+
+```lua
+local Header = Box:AddHeader("Items", "30 items, click one to pick it")
+Header:SetSubtitle("12 items")
+```
+
+### Item grid
+
+Cards with a picture, name and rarity, tinted with the rarity color. As many columns as fit.
+
+```lua
+local Grid = Box:AddItemGrid("PickedItem", {
+	Items = {
+		{ Name = "Dominus Empyreus", AssetId = 21070012, Rarity = "Godly" }, -- AssetId shows the catalog thumbnail
+		{ Name = "Sword", Image = 123456789, Rarity = "Rare", Value = "sword_01" }, -- or any image id
+	},
+	Multi = false,
+	Filter = function(Item) return true end, -- optional extra filter
+	Callback = function(Value) end,          -- Value is the item's Value (or Name)
+})
+
+Grid:SetFilter("dom")         -- name search
+Grid:SetRarityFilter("Godly") -- or "All"
+print(Grid:GetVisibleCount())
+```
+
+Rarity colors come from `Library.Rarities` (Common, Uncommon, Rare, Epic, Legendary, Mythic, Ancient, Godly). Override them per grid with `Rarities = { ... }`. Methods: `SetItems`, `AddItems`, `SetFilter`, `SetRarityFilter`, `GetVisibleCount`, `SetValue`, `GetActiveValues`, `Display`, `OnChanged`.
+
 ## Big groupbox elements
 
 These can only be added to a groupbox made with `Tab:AddBigGroupbox`.
@@ -347,7 +444,7 @@ Notification:Destroy()
 
 The gear icon in the top right opens a panel that every script gets for free:
 
-- **Menu:** menu keybind and DPI scale
+- **Menu:** menu keybind, layout and DPI scale (Auto or a fixed %)
 - **Theme:** a grid of live, animated theme cards. Click one to switch
 - **Configs:** create, load, overwrite, delete, refresh, set autoload, reset autoload
 - **Script:** unload
@@ -361,7 +458,7 @@ Extra:AddToggle("Watermark", { Text = "Show watermark" })
 
 ## Configs
 
-Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, color pickers, keybinds, inputs, and the menu keybind, DPI and theme from settings.
+Configs are JSON files saved in `Ui3/<window title>/configs/`, or in the folder you pass as `ConfigFolder`. They store toggles, checkboxes, sliders, dropdowns, chips, item grid picks, color pickers, keybinds, inputs, and the menu keybind, layout, DPI and theme from settings.
 
 Autoload applies saved values the moment each element is created. That way it works even if your script creates elements after a wait. Loading a value runs that element's callback, so features turn back on.
 
@@ -388,6 +485,7 @@ Each of these returns `success, errorMessage`. Configs need an executor with fil
 ```lua
 Library:SetFont(Enum.Font.Gotham)
 Library:SetDPIScale(125)                           -- 50 to 200, like Obsidian
+Library:SetDPIScale("Auto")                        -- back to following the screen size
 Library:SetTransparency({ Groupbox = 0.25, Element = 0.12 }) -- 0 = solid, 1 = invisible
 
 Library:Toggle()        -- show or hide the window
@@ -407,7 +505,7 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 
 | Theme | Look |
 | --- | --- |
-| `Monochrome` | Default. Black and white, no nebula |
+| `Monochrome` | Default. Black and white: smoke-grey nebula, soft white highlights |
 | `Violet` | Deep purple nebula, lilac accent |
 | `Ocean` | Navy nebula, sky blue accent |
 | `Magenta` | Plum nebula, hot pink accent |
@@ -415,7 +513,7 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 | `Ember` | Dark red nebula, orange accent |
 | `Aurora` | Teal and gold nebula, cyan accent |
 
-The nebula themes recreate the animated buttons from [website5](https://github.com/iamdookie1/website5), using the same colors, cloud layout, drift keyframes, timings and star positions. Picking one:
+Every theme is animated. They recreate the animated buttons from [website5](https://github.com/iamdookie1/website5), using the same colors, cloud layout, drift keyframes, timings and star positions. Picking one:
 
 - turns **every button** into one of those nebula buttons: drifting clouds, twinkling stars, an inner top highlight and a colored glow that brightens on hover;
 - makes the **selected tab** a nebula button too;
