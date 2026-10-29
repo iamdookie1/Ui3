@@ -352,6 +352,11 @@ local function Sheen(Parent)
     return Gradient
 end
 
+-- Text shown in RichText labels must not be parsed as markup.
+local function EscapeRich(Text)
+    return (tostring(Text):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+
 local function MakeLine(Props)
     Props.BackgroundColor3 = "OutlineColor"
     return New("Frame", Props)
@@ -446,8 +451,8 @@ Library.Themes = {
             AccentColor = Color3.fromRGB(225, 225, 225),
             ShadowColor = Color3.fromRGB(0, 0, 0),
         },
-        -- Only the settings card is a nebula; the window stays plain black and white.
-        PreviewColors = { Hex("#2b2b2b"), Hex("#8c8c8c"), Hex("#ececec"), Hex("#0b0b0b") },
+        -- A black and white nebula: smoke-grey clouds, soft white highlights.
+        Colors = { Hex("#2b2b2b"), Hex("#8c8c8c"), Hex("#ececec"), Hex("#0b0b0b") },
         Glow = Color3.fromRGB(200, 200, 200),
         Duration = 16, Delay = -3, Twinkle = 3, TwinkleDelay = 0,
     },
@@ -718,7 +723,7 @@ local function CreateNebulaSkin(Parent, Settings)
         Parent = Parent,
     })
     if Settings.Corner then
-        Corner(Canvas, Settings.Corner)
+        Skin.CornerObject = Corner(Canvas, Settings.Corner)
     end
 
     local Layer = New("Frame", {
@@ -1068,10 +1073,17 @@ local function NewScale(Parent)
     return Scale
 end
 
--- Accepts 100, "100%" or "100".
+-- Accepts "Auto", 100, "100%" or "100". "Auto" picks the scale from the screen size and keeps
+-- following it when the screen / Roblox window is resized.
 function Library:SetDPIScale(Percent)
-    if typeof(Percent) == "string" then
-        Percent = tonumber((Percent:gsub("%%", "")))
+    if typeof(Percent) == "string" and Percent:lower() == "auto" then
+        Library.AutoScale = true
+        Percent = Library.GetAutoScalePercent and Library.GetAutoScalePercent() or 100
+    else
+        Library.AutoScale = false
+        if typeof(Percent) == "string" then
+            Percent = tonumber((Percent:gsub("%%", "")))
+        end
     end
     Percent = math.clamp(tonumber(Percent) or 100, 25, 300)
     Library.DPIScale = Percent / 100
@@ -1111,6 +1123,41 @@ local function GetScreenSize()
     end
     return Size
 end
+
+--// Auto scale: from the screen size, not the device type \\--
+-- 100% at ~1000px of screen height (1080p), bigger on 1440p / 4K, smaller on small screens,
+-- and never so big that the window wouldn't fit. Steps of 5% so it doesn't jitter.
+Library.AutoScale = true
+Library.AutoScaleLimits = { Min = 0.7, Max = 2, ReferenceHeight = 1000 }
+
+function Library.GetAutoScalePercent()
+    local Limits = Library.AutoScaleLimits
+    local Screen = GetScreenSize()
+    local Camera = workspace.CurrentCamera
+    local Viewport = Camera and Camera.ViewportSize or Screen
+
+    local Scale = Viewport.Y / Limits.ReferenceHeight
+    local Design = Library.DesignSize
+    if Design then
+        Scale = math.min(Scale, (Screen.X - 24) / Design.X, (Screen.Y - 24) / Design.Y)
+    end
+    Scale = math.clamp(Scale, Limits.Min, Limits.Max)
+    return math.floor(Scale * 20 + 0.5) * 5
+end
+
+-- Small screens (phones) get a smaller color picker.
+local function IsSmallScreen()
+    return GetScreenSize().Y < 520
+end
+
+Library:GiveSignal(ScreenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    if Library.AutoScale and not Library.Unloaded then
+        local Percent = Library.GetAutoScalePercent()
+        if Percent ~= math.floor(Library.DPIScale * 100 + 0.5) then
+            Library:SetDPIScale("Auto")
+        end
+    end
+end))
 
 --// Theme animation: shine sweep + border light \\--
 do
@@ -1712,6 +1759,9 @@ local Templates = {
         CornerRadius = 10,
         ToggleKeybind = Enum.KeyCode.RightControl,
         ShowSettings = true,
+        ShowControls = true, -- minimize + close buttons
+        ShowProfile = true, -- avatar card in the Modern layout
+        Layout = "Modern", -- Modern, Classic, Compact, Topbar
     },
     Groupbox = {
         Side = "Left",
@@ -1790,6 +1840,29 @@ local Templates = {
         MaxLines = 200,
         Timestamps = true,
     },
+    SearchBox = {
+        Placeholder = "Search...",
+        Default = "",
+        Icon = "search",
+        Callback = function() end,
+    },
+    Chips = {
+        Values = {},
+        Multi = false,
+        AllowNull = false,
+        Columns = 3,
+        Height = 34,
+        Callback = function() end,
+    },
+    ItemGrid = {
+        Items = {},
+        Multi = false,
+        AllowNull = true,
+        CellHeight = 176,
+        MinCellWidth = 128,
+        EmptyText = "No items found",
+        Callback = function() end,
+    },
 }
 
 -- Registers an element and applies any value waiting for it from the autoload config,
@@ -1863,7 +1936,7 @@ function Funcs:AddColorPicker(Idx, Info)
     })
 
     --// Popup \\--
-    local MapSize = Library.IsMobile and 150 or 180
+    local MapSize = if IsSmallScreen() then 150 else 180
     local BarWidth = 12
     local MenuWidth = MapSize + (BarWidth + 8) * (Info.Transparency and 2 or 1) + 20
 
@@ -2732,7 +2805,7 @@ function Funcs:AddButton(...)
             Visible = Button.Visible,
             Parent = Holder,
         })
-        Corner(Base, 6)
+        Corner(Base, 8)
         local BaseStroke = Stroke(Base)
 
         local Label = New("TextLabel", {
@@ -2759,7 +2832,7 @@ function Funcs:AddButton(...)
         -- Nebula themes turn every button into one of the website's nebula buttons.
         local Groupbox = self
         Button.Skin = CreateNebulaSkin(Base, {
-            Corner = 6,
+            Corner = 8,
             FollowTheme = true,
             Glow = 7,
             GlowTransparency = 0.68,
@@ -2919,7 +2992,7 @@ function Funcs:AddButton(...)
 
     local Holder = New("Frame", {
         BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 28),
+        Size = UDim2.new(1, 0, 0, 32),
         Parent = Groupbox.Container,
     })
     List(Holder, 8, {
@@ -2992,14 +3065,14 @@ function Funcs:AddInput(Idx, Info)
         ClearTextOnFocus = Info.ClearTextOnFocus,
         LayoutOrder = 1,
         PlaceholderText = Info.Placeholder,
-        Size = UDim2.new(1, 0, 0, 30),
+        Size = UDim2.new(1, 0, 0, 34),
         Text = "",
         TextTruncate = Enum.TextTruncate.AtEnd,
         TextXAlignment = Enum.TextXAlignment.Left,
         Parent = Holder,
     })
-    Corner(Box, 6)
-    Padding(Box, 0, 0, 10, 10)
+    Corner(Box, 8)
+    Padding(Box, 0, 0, 12, 12)
     local BoxStroke = Stroke(Box)
 
     Input.TextLabel = Label
@@ -3454,12 +3527,15 @@ function Funcs:AddDropdown(Idx, Info)
     })
     List(Holder, 5)
 
+    -- Inline: no label above, the box reads "Text: Value" (like "Type: Back").
+    local Inline = Info.Inline == true
+
     local Label = New("TextLabel", {
         Size = UDim2.new(1, 0, 0, 16),
         Text = Dropdown.Text or "",
         TextTransparency = 0.4,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Visible = Dropdown.Text ~= nil,
+        Visible = Dropdown.Text ~= nil and not Inline,
         Parent = Holder,
     })
 
@@ -3467,15 +3543,15 @@ function Funcs:AddDropdown(Idx, Info)
         BackgroundColor3 = "SecondaryColor",
         TransparencyRole = "Element",
         LayoutOrder = 1,
-        Size = UDim2.new(1, 0, 0, 30),
+        Size = UDim2.new(1, 0, 0, 34),
         Parent = Holder,
     })
-    Corner(Box, 6)
+    Corner(Box, 8)
     local BoxStroke = Stroke(Box)
 
     local DisplayLabel = New("TextLabel", {
-        Position = UDim2.fromOffset(10, 0),
-        Size = UDim2.new(1, -38, 1, 0),
+        Position = UDim2.fromOffset(12, 0),
+        Size = UDim2.new(1, -42, 1, 0),
         Text = "",
         TextTransparency = 0.2,
         TextTruncate = Enum.TextTruncate.AtEnd,
@@ -3487,18 +3563,18 @@ function Funcs:AddDropdown(Idx, Info)
     local ChevronIcon = Library:GetIcon("chevron-down")
     if ChevronIcon then
         Arrow = New("ImageLabel", {
-            AnchorPoint = Vector2.new(1, 0),
+            AnchorPoint = Vector2.new(1, 0.5),
             ImageColor3 = "FontColor",
             ImageTransparency = 0.4,
-            Position = UDim2.new(1, -8, 0, 7),
+            Position = UDim2.new(1, -10, 0.5, 0),
             Size = UDim2.fromOffset(16, 16),
             Parent = Box,
         })
         ApplyIcon(Arrow, ChevronIcon)
     else
         Arrow = New("TextLabel", {
-            AnchorPoint = Vector2.new(1, 0),
-            Position = UDim2.new(1, -8, 0, 7),
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -10, 0.5, 0),
             Size = UDim2.fromOffset(16, 16),
             Text = "v",
             TextTransparency = 0.4,
@@ -3668,8 +3744,14 @@ function Funcs:AddDropdown(Idx, Info)
         end
 
         local Text = table.concat(Parts, ", ")
-        DisplayLabel.Text = Text == "" and "None" or Text
-        DisplayLabel.TextTransparency = Dropdown.Disabled and 0.8 or (Text == "" and 0.6 or 0.2)
+        local Shown = EscapeRich(Text == "" and "None" or Text)
+        if Inline and Dropdown.Text then
+            DisplayLabel.Text = '<font transparency="0.4">' .. EscapeRich(Dropdown.Text) .. ":</font> " .. Shown
+            DisplayLabel.TextTransparency = Dropdown.Disabled and 0.8 or 0.1
+        else
+            DisplayLabel.Text = Shown
+            DisplayLabel.TextTransparency = Dropdown.Disabled and 0.8 or (Text == "" and 0.6 or 0.2)
+        end
     end
 
     local function UpdateRows()
@@ -3915,7 +3997,8 @@ function Funcs:AddDropdown(Idx, Info)
     function Dropdown:SetText(Text)
         Dropdown.Text = Text
         Label.Text = Text or ""
-        Label.Visible = Text ~= nil
+        Label.Visible = Text ~= nil and not Inline
+        Dropdown:Display()
     end
 
     function Dropdown:SetDisabled(Disabled)
@@ -4364,6 +4447,789 @@ function Funcs:AddLog(Idx, Info)
     return Log
 end
 
+--// Showcase elements: rows, search, chips, headers, item cards \\--
+
+-- Groupbox:AddRow(): elements added to the row sit side by side and share the width equally.
+function Funcs:AddRow(Gap)
+    local Frame = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = self.Container,
+    })
+    List(Frame, Gap or 8, {
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalFlex = Enum.UIFlexAlignment.Fill,
+    })
+
+    local Row = {
+        Container = Frame,
+        Holder = Frame,
+        Tab = self.Tab,
+        IsBig = self.IsBig,
+        Type = "Row",
+    }
+
+    function Row:SetVisible(Visible)
+        Frame.Visible = Visible
+    end
+
+    setmetatable(Row, { __index = Funcs })
+    return Row
+end
+
+-- A bold section title with an optional dim subtitle ("Items" / "30 items, click one to pick it").
+function Funcs:AddHeader(Text, Subtitle)
+    if typeof(Text) == "table" then
+        Subtitle = Text.Subtitle
+        Text = Text.Text
+    end
+
+    local Holder = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = self.Container,
+    })
+    List(Holder, 2)
+
+    local Title = New("TextLabel", {
+        FontFace = Bold,
+        Size = UDim2.new(1, 0, 0, 22),
+        Text = Text or "",
+        TextSize = 18,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Holder,
+    })
+
+    local Sub = New("TextLabel", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 1,
+        Size = UDim2.fromScale(1, 0),
+        Text = Subtitle or "",
+        TextSize = 13,
+        TextTransparency = 0.5,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Visible = Subtitle ~= nil and Subtitle ~= "",
+        Parent = Holder,
+    })
+
+    local Header = { Type = "Header" }
+
+    function Header:SetText(NewText)
+        Title.Text = NewText
+    end
+
+    function Header:SetSubtitle(NewText)
+        Sub.Text = NewText or ""
+        Sub.Visible = NewText ~= nil and NewText ~= ""
+    end
+
+    function Header:SetVisible(Visible)
+        Holder.Visible = Visible
+    end
+
+    return Header
+end
+
+-- A big search bar with an icon and a clear button. Not saved in configs.
+function Funcs:AddSearchBox(Idx, Info)
+    if typeof(Idx) == "table" then
+        Info, Idx = Idx, nil
+    end
+    Info = Library:Validate(Info, Templates.SearchBox)
+
+    local Search = {
+        Value = "",
+        Callback = Info.Callback,
+        Changed = Info.Changed,
+        Type = "SearchBox",
+    }
+
+    local Holder = New("Frame", {
+        BackgroundColor3 = "SecondaryColor",
+        TransparencyRole = "Element",
+        Size = UDim2.new(1, 0, 0, 38),
+        Parent = self.Container,
+    })
+    Corner(Holder, 10)
+    local HolderStroke = Stroke(Holder)
+
+    local IconData = Library:GetIcon(Info.Icon)
+    local IconImage
+    if IconData then
+        IconImage = New("ImageLabel", {
+            AnchorPoint = Vector2.new(0, 0.5),
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.5,
+            Position = UDim2.new(0, 13, 0.5, 0),
+            Size = UDim2.fromOffset(16, 16),
+            Parent = Holder,
+        })
+        ApplyIcon(IconImage, IconData)
+    end
+
+    local TextX = if IconData then 38 else 14
+    local Box = New("TextBox", {
+        BackgroundTransparency = 1,
+        PlaceholderText = Info.Placeholder,
+        Position = UDim2.fromOffset(TextX, 0),
+        Size = UDim2.new(1, -TextX - 34, 1, 0),
+        Text = "",
+        TextSize = 14,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Holder,
+    })
+
+    local Clear = New("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -9, 0.5, 0),
+        Size = UDim2.fromOffset(20, 20),
+        Visible = false,
+        Parent = Holder,
+    })
+    local ClearIcon = Library:GetIcon("x")
+    if ClearIcon then
+        local Glyph = New("ImageLabel", {
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.5,
+            Position = UDim2.fromOffset(3, 3),
+            Size = UDim2.fromOffset(14, 14),
+            Parent = Clear,
+        })
+        ApplyIcon(Glyph, ClearIcon)
+    else
+        Clear.Text = "x"
+        Clear.TextTransparency = 0.5
+    end
+
+    Search.TextBox = Box
+
+    function Search:OnChanged(Func)
+        Search.Changed = Func
+    end
+
+    function Search:SetValue(Text)
+        Text = tostring(Text or "")
+        if Box.Text ~= Text then
+            Box.Text = Text
+        end
+        if Search.Value == Text then
+            return
+        end
+        Search.Value = Text
+        Clear.Visible = Text ~= ""
+        Library:SafeCallback(Search.Callback, Text)
+        Library:SafeCallback(Search.Changed, Text)
+    end
+
+    function Search:SetPlaceholder(Text)
+        Box.PlaceholderText = Text
+    end
+
+    function Search:SetVisible(Visible)
+        Holder.Visible = Visible
+    end
+
+    Box:GetPropertyChangedSignal("Text"):Connect(function()
+        Search:SetValue(Box.Text)
+    end)
+
+    Box.Focused:Connect(function()
+        SetThemed(HolderStroke, "Color", "AccentColor", Library.FastTweenInfo)
+        if IconImage then
+            Tween(IconImage, Library.FastTweenInfo, { ImageTransparency = 0.1 })
+        end
+    end)
+    Box.FocusLost:Connect(function()
+        SetThemed(HolderStroke, "Color", "OutlineColor", Library.FastTweenInfo)
+        if IconImage then
+            Tween(IconImage, Library.FastTweenInfo, { ImageTransparency = 0.5 })
+        end
+    end)
+
+    Clear.MouseButton1Click:Connect(function()
+        Search:SetValue("")
+    end)
+
+    Search.Value = tostring(Info.Default or "")
+    Box.Text = Search.Value
+    Clear.Visible = Search.Value ~= ""
+
+    setmetatable(Search, { __index = Funcs })
+
+    if Idx then
+        Options[Idx] = Search
+    end
+    return Search
+end
+
+-- A grid of pill buttons; the selected one is filled with the accent (like "All / Godly / Ancient").
+function Funcs:AddChips(Idx, Info)
+    Info = Library:Validate(Info, Templates.Chips)
+
+    local Chips = {
+        Text = Info.Text,
+        Values = Info.Values,
+        Value = if Info.Multi then {} else nil,
+        Multi = Info.Multi,
+        AllowNull = Info.AllowNull,
+        Callback = Info.Callback,
+        Changed = Info.Changed,
+        Buttons = {},
+        Type = "Chips",
+    }
+
+    local Holder = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = self.Container,
+    })
+    List(Holder, 6)
+
+    if Info.Text then
+        New("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 16),
+            Text = Info.Text,
+            TextTransparency = 0.4,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Holder,
+        })
+    end
+
+    local Grid = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        LayoutOrder = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = Holder,
+    })
+    local Columns = math.max(1, math.floor(Info.Columns))
+    New("UIGridLayout", {
+        CellPadding = UDim2.fromOffset(8, 8),
+        CellSize = UDim2.new(1 / Columns, -8 * (Columns - 1) / Columns, 0, Info.Height),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = Grid,
+    })
+
+    local function IsSelected(Value)
+        if Chips.Multi then
+            return Chips.Value[Value] == true
+        end
+        return Chips.Value == Value
+    end
+
+    function Chips:Display(Instant)
+        local TweenData = if Instant then false else Library.FastTweenInfo
+        for Value, Chip in Chips.Buttons do
+            local On = IsSelected(Value)
+            SetThemed(Chip.Base, "BackgroundColor3", On and "AccentColor" or "SecondaryColor", TweenData)
+            SetThemed(Chip.Stroke, "Color", On and "AccentColor" or "OutlineColor", TweenData)
+            SetThemed(Chip.Label, "TextColor3", On and "BackgroundColor" or "FontColor", TweenData)
+            Chip.Base.BackgroundTransparency = if On then 0 else Library.Transparency.Element
+            Chip.Label.TextTransparency = if On then 0 else 0.3
+        end
+    end
+
+    function Chips:RunChanged()
+        Library:SafeCallback(Chips.Callback, Chips.Value)
+        Library:SafeCallback(Chips.Changed, Chips.Value)
+    end
+
+    local function Build()
+        for _, Chip in Chips.Buttons do
+            Chip.Base:Destroy()
+        end
+        table.clear(Chips.Buttons)
+
+        for Order, Value in Chips.Values do
+            local Base = New("TextButton", {
+                BackgroundColor3 = "SecondaryColor",
+                LayoutOrder = Order,
+                Parent = Grid,
+            })
+            Corner(Base, 8)
+            local ChipStroke = Stroke(Base)
+            Sheen(Base)
+
+            local Label = New("TextLabel", {
+                Size = UDim2.fromScale(1, 1),
+                Text = tostring(Value),
+                TextSize = 14,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                Parent = Base,
+            })
+            Padding(Label, 0, 0, 6, 6)
+
+            OnHover(Base, function()
+                if not IsSelected(Value) then
+                    Tween(Label, Library.FastTweenInfo, { TextTransparency = 0 })
+                end
+            end, function()
+                if not IsSelected(Value) then
+                    Tween(Label, Library.FastTweenInfo, { TextTransparency = 0.3 })
+                end
+            end)
+
+            Base.MouseButton1Click:Connect(function()
+                if not Library:CanInteract() then
+                    return
+                end
+                if Chips.Multi then
+                    Chips.Value[Value] = (not Chips.Value[Value]) or nil
+                elseif Chips.Value == Value then
+                    if not Chips.AllowNull then
+                        return
+                    end
+                    Chips.Value = nil
+                else
+                    Chips.Value = Value
+                end
+                Chips:Display()
+                Chips:RunChanged()
+            end)
+
+            Chips.Buttons[Value] = { Base = Base, Label = Label, Stroke = ChipStroke }
+        end
+
+        Chips:Display(true)
+    end
+
+    function Chips:OnChanged(Func)
+        Chips.Changed = Func
+    end
+
+    function Chips:GetActiveValues()
+        local Active = {}
+        if Chips.Multi then
+            for _, Value in Chips.Values do
+                if Chips.Value[Value] then
+                    table.insert(Active, Value)
+                end
+            end
+        elseif Chips.Value ~= nil then
+            table.insert(Active, Chips.Value)
+        end
+        return Active
+    end
+
+    function Chips:SetValue(Value)
+        if Chips.Multi then
+            local Set = {}
+            if typeof(Value) == "table" then
+                for Key, Entry in Value do
+                    if typeof(Entry) == "boolean" then
+                        if Entry and table.find(Chips.Values, Key) then
+                            Set[Key] = true
+                        end
+                    elseif table.find(Chips.Values, Entry) then
+                        Set[Entry] = true
+                    end
+                end
+            elseif Value ~= nil and table.find(Chips.Values, Value) then
+                Set[Value] = true
+            end
+            Chips.Value = Set
+        elseif Value == nil or table.find(Chips.Values, Value) then
+            Chips.Value = Value
+        end
+        Chips:Display()
+        Chips:RunChanged()
+    end
+
+    function Chips:SetValues(Values)
+        Chips.Values = Values or {}
+        if Chips.Multi then
+            for Value in Chips.Value do
+                if not table.find(Chips.Values, Value) then
+                    Chips.Value[Value] = nil
+                end
+            end
+        elseif Chips.Value ~= nil and not table.find(Chips.Values, Chips.Value) then
+            Chips.Value = nil
+        end
+        Build()
+    end
+
+    function Chips:SetVisible(Visible)
+        Holder.Visible = Visible
+    end
+
+    -- Default: index, value, or a list (multi).
+    local function Resolve(Default)
+        if typeof(Default) == "number" and Chips.Values[Default] ~= nil then
+            return Chips.Values[Default]
+        end
+        return Default
+    end
+    if Info.Default ~= nil then
+        if Chips.Multi then
+            for _, Entry in (if typeof(Info.Default) == "table" then Info.Default else { Info.Default }) do
+                local Value = Resolve(Entry)
+                if table.find(Chips.Values, Value) then
+                    Chips.Value[Value] = true
+                end
+            end
+        else
+            local Value = Resolve(Info.Default)
+            if table.find(Chips.Values, Value) then
+                Chips.Value = Value
+            end
+        end
+    end
+
+    Build()
+    table.insert(Library.Updaters, function()
+        Chips:Display(true)
+    end)
+
+    setmetatable(Chips, { __index = Funcs })
+    RegisterElement(Idx, Chips)
+    return Chips
+end
+
+-- Rarity colors used by item cards (override per grid with Info.Rarities).
+Library.Rarities = {
+    Common = Color3.fromRGB(165, 170, 182),
+    Uncommon = Color3.fromRGB(95, 205, 125),
+    Rare = Color3.fromRGB(85, 140, 255),
+    Epic = Color3.fromRGB(170, 95, 255),
+    Legendary = Color3.fromRGB(235, 85, 85),
+    Mythic = Color3.fromRGB(255, 170, 60),
+    Ancient = Color3.fromRGB(150, 105, 255),
+    Godly = Color3.fromRGB(225, 95, 210),
+}
+
+local function ItemImage(Item)
+    if Item.AssetId then
+        return "rbxthumb://type=Asset&id=" .. tostring(Item.AssetId) .. "&w=150&h=150"
+    end
+    if Item.Image then
+        if tonumber(Item.Image) then
+            return "rbxassetid://" .. tostring(Item.Image)
+        end
+        return tostring(Item.Image)
+    end
+    return ""
+end
+
+-- A grid of item cards: picture, name and rarity, tinted with the rarity color.
+-- Items: { Name, Rarity?, Image? (asset id / url), AssetId? (catalog thumbnail), Value?, Color? }
+function Funcs:AddItemGrid(Idx, Info)
+    Info = Library:Validate(Info, Templates.ItemGrid)
+
+    local Rarities = {}
+    for Name, Color in Library.Rarities do
+        Rarities[Name] = Color
+    end
+    for Name, Color in Info.Rarities or {} do
+        Rarities[Name] = Color
+    end
+
+    local Grid = {
+        Items = {},
+        Value = if Info.Multi then {} else nil,
+        Multi = Info.Multi,
+        AllowNull = Info.AllowNull,
+        Rarities = Rarities,
+        Filter = "",
+        RarityFilter = nil,
+        FilterFunction = Info.Filter,
+        Callback = Info.Callback,
+        Changed = Info.Changed,
+        Cards = {},
+        Type = "ItemGrid",
+    }
+
+    local Holder = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = self.Container,
+    })
+    List(Holder, 0)
+
+    local GridFrame = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = Holder,
+    })
+    local GridLayout = New("UIGridLayout", {
+        CellPadding = UDim2.fromOffset(10, 10),
+        CellSize = UDim2.fromOffset(Info.MinCellWidth, Info.CellHeight),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = GridFrame,
+    })
+
+    local EmptyLabel = New("TextLabel", {
+        LayoutOrder = 1,
+        Size = UDim2.new(1, 0, 0, 60),
+        Text = Info.EmptyText,
+        TextSize = 13,
+        TextTransparency = 0.55,
+        Visible = false,
+        Parent = Holder,
+    })
+
+    -- As many columns as fit, all the same width.
+    local function Relayout()
+        local Width = GridFrame.AbsoluteSize.X / math.max(Library.DPIScale, 0.01)
+        if Width < 1 then
+            return
+        end
+        local Columns = math.max(1, math.floor((Width + 10) / (Info.MinCellWidth + 10)))
+        GridLayout.CellSize = UDim2.new(1 / Columns, -10 * (Columns - 1) / Columns, 0, Info.CellHeight)
+    end
+    GridFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(Relayout)
+
+    local function ValueOf(Item)
+        if Item.Value ~= nil then
+            return Item.Value
+        end
+        return Item.Name
+    end
+
+    local function IsSelected(Value)
+        if Grid.Multi then
+            return Grid.Value[Value] == true
+        end
+        return Grid.Value == Value
+    end
+
+    local function Matches(Item)
+        if Grid.RarityFilter and Item.Rarity ~= Grid.RarityFilter then
+            return false
+        end
+        if Grid.Filter ~= "" and not tostring(Item.Name):lower():find(Grid.Filter, 1, true) then
+            return false
+        end
+        if Grid.FilterFunction and not Grid.FilterFunction(Item) then
+            return false
+        end
+        return true
+    end
+
+    function Grid:Display()
+        local Visible = 0
+        for _, Card in Grid.Cards do
+            local Show = Matches(Card.Item)
+            Card.Frame.Visible = Show
+            if Show then
+                Visible += 1
+            end
+
+            local On = IsSelected(Card.Value)
+            SetThemed(Card.Stroke, "Color", On and "AccentColor" or "OutlineColor", Library.FastTweenInfo)
+            Tween(Card.Stroke, Library.FastTweenInfo, { Thickness = On and 1.6 or 1 })
+            Card.Frame.BackgroundTransparency = Library.Transparency.Element
+        end
+        Grid.VisibleCount = Visible
+        EmptyLabel.Visible = Visible == 0
+    end
+
+    function Grid:RunChanged()
+        Library:SafeCallback(Grid.Callback, Grid.Value)
+        Library:SafeCallback(Grid.Changed, Grid.Value)
+    end
+
+    local function BuildCard(Item, Order)
+        local Color = Item.Color or Rarities[Item.Rarity] or Rarities.Common
+        local Value = ValueOf(Item)
+
+        local Frame = New("TextButton", {
+            BackgroundColor3 = "SecondaryColor",
+            ClipsDescendants = true,
+            LayoutOrder = Order,
+            Parent = GridFrame,
+        })
+        Corner(Frame, 12)
+        local CardStroke = Stroke(Frame)
+
+        -- Rarity glow rising from the bottom of the card.
+        local Tint = New("Frame", {
+            BackgroundColor3 = Color,
+            BackgroundTransparency = 0.35,
+            Size = UDim2.fromScale(1, 1),
+            Parent = Frame,
+        })
+        Corner(Tint, 12)
+        New("UIGradient", {
+            Rotation = 90,
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.45, 0.96),
+                NumberSequenceKeypoint.new(1, 0.72),
+            }),
+            Parent = Tint,
+        })
+
+        local Picture = New("ImageLabel", {
+            AnchorPoint = Vector2.new(0.5, 0),
+            Image = ItemImage(Item),
+            Position = UDim2.new(0.5, 0, 0, 14),
+            ScaleType = Enum.ScaleType.Fit,
+            Size = UDim2.new(1, -28, 1, -72),
+            ZIndex = 2,
+            Parent = Frame,
+        })
+        local PictureScale = New("UIScale", { Parent = Picture })
+
+        New("TextLabel", {
+            AnchorPoint = Vector2.new(0, 1),
+            FontFace = SemiBold,
+            Position = UDim2.new(0, 10, 1, -27),
+            Size = UDim2.new(1, -20, 0, 18),
+            Text = tostring(Item.Name or "Item"),
+            TextSize = 14,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 2,
+            Parent = Frame,
+        })
+
+        New("TextLabel", {
+            AnchorPoint = Vector2.new(0, 1),
+            Position = UDim2.new(0, 10, 1, -11),
+            Size = UDim2.new(1, -20, 0, 14),
+            Text = tostring(Item.Rarity or ""),
+            TextColor3 = Color,
+            TextSize = 12,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 2,
+            Parent = Frame,
+        })
+
+        OnHover(Frame, function()
+            Tween(PictureScale, Library.FastTweenInfo, { Scale = 1.07 })
+            Tween(Tint, Library.FastTweenInfo, { BackgroundTransparency = 0 })
+        end, function()
+            Tween(PictureScale, Library.FastTweenInfo, { Scale = 1 })
+            Tween(Tint, Library.FastTweenInfo, { BackgroundTransparency = 0.35 })
+        end)
+
+        Frame.MouseButton1Click:Connect(function()
+            if not Library:CanInteract() then
+                return
+            end
+            if Grid.Multi then
+                Grid.Value[Value] = (not Grid.Value[Value]) or nil
+            elseif Grid.Value == Value then
+                if not Grid.AllowNull then
+                    return
+                end
+                Grid.Value = nil
+            else
+                Grid.Value = Value
+            end
+            Grid:Display()
+            Grid:RunChanged()
+        end)
+
+        table.insert(Grid.Cards, { Frame = Frame, Stroke = CardStroke, Item = Item, Value = Value })
+    end
+
+    function Grid:SetItems(Items)
+        for _, Card in Grid.Cards do
+            Card.Frame:Destroy()
+        end
+        table.clear(Grid.Cards)
+        Grid.Items = Items or {}
+        for Order, Item in Grid.Items do
+            BuildCard(Item, Order)
+        end
+        Grid:Display()
+    end
+
+    function Grid:AddItems(Items)
+        for _, Item in Items do
+            table.insert(Grid.Items, Item)
+            BuildCard(Item, #Grid.Items)
+        end
+        Grid:Display()
+    end
+
+    -- Case-insensitive name search ("" shows everything).
+    function Grid:SetFilter(Text)
+        Grid.Filter = tostring(Text or ""):lower()
+        Grid:Display()
+    end
+
+    -- nil or "All" shows every rarity.
+    function Grid:SetRarityFilter(Rarity)
+        Grid.RarityFilter = if Rarity == nil or Rarity == "All" then nil else Rarity
+        Grid:Display()
+    end
+
+    function Grid:GetVisibleCount()
+        return Grid.VisibleCount or 0
+    end
+
+    function Grid:GetActiveValues()
+        local Active = {}
+        if Grid.Multi then
+            for Value in Grid.Value do
+                table.insert(Active, Value)
+            end
+        elseif Grid.Value ~= nil then
+            table.insert(Active, Grid.Value)
+        end
+        return Active
+    end
+
+    function Grid:SetValue(Value)
+        if Grid.Multi then
+            local Set = {}
+            for Key, Entry in (if typeof(Value) == "table" then Value else { Value }) do
+                if typeof(Entry) == "boolean" then
+                    if Entry then
+                        Set[Key] = true
+                    end
+                elseif Entry ~= nil then
+                    Set[Entry] = true
+                end
+            end
+            Grid.Value = Set
+        else
+            Grid.Value = Value
+        end
+        Grid:Display()
+        Grid:RunChanged()
+    end
+
+    function Grid:OnChanged(Func)
+        Grid.Changed = Func
+    end
+
+    function Grid:SetVisible(Visible)
+        Holder.Visible = Visible
+    end
+
+    if Info.Default ~= nil then
+        if Grid.Multi then
+            for _, Entry in (if typeof(Info.Default) == "table" then Info.Default else { Info.Default }) do
+                Grid.Value[Entry] = true
+            end
+        else
+            Grid.Value = Info.Default
+        end
+    end
+
+    Grid:SetItems(Info.Items)
+    Relayout()
+    table.insert(Library.Updaters, function()
+        Grid:Display()
+    end)
+
+    setmetatable(Grid, { __index = Funcs })
+    RegisterElement(Idx, Grid)
+    return Grid
+end
+
 --// Groupboxes \\--
 local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
     local Box = New("Frame", {
@@ -4543,6 +5409,12 @@ function Library:GetConfigData()
             table.insert(Objects, { type = "Input", idx = Idx, text = Option.Value })
         elseif Option.Type == "ThemePicker" then
             table.insert(Objects, { type = "ThemePicker", idx = Idx, value = Option.Value })
+        elseif Option.Type == "Chips" or Option.Type == "ItemGrid" then
+            local Value = Option.Value
+            if Option.Multi then
+                Value = Option:GetActiveValues()
+            end
+            table.insert(Objects, { type = Option.Type, idx = Idx, value = Value, multi = Option.Multi })
         end
     end
 
@@ -4573,6 +5445,8 @@ function Library:ApplyConfigEntry(Entry)
         elseif Entry.type == "Input" then
             Object:SetValue(Entry.text)
         elseif Entry.type == "ThemePicker" then
+            Object:SetValue(Entry.value)
+        elseif Entry.type == "Chips" or Entry.type == "ItemGrid" then
             Object:SetValue(Entry.value)
         end
     end)
@@ -4827,9 +5701,9 @@ function Library:CreateWindow(WindowInfo)
         Library:LoadAutoloadConfig()
     end
 
-    if WindowInfo.DPIScale then
-        Library:SetDPIScale(WindowInfo.DPIScale)
-    end
+    -- "100%" means this design size; Auto scale (the default) fits it to the screen.
+    Library.DesignSize = Vector2.new(WindowInfo.Size.X.Offset, WindowInfo.Size.Y.Offset)
+    Library:SetDPIScale(WindowInfo.DPIScale or "Auto")
     if WindowInfo.Theme then
         Library:SetTheme(WindowInfo.Theme, true)
     end
@@ -4844,6 +5718,7 @@ function Library:CreateWindow(WindowInfo)
 
     local Window = {
         Tabs = {},
+        Sections = {},
     }
 
     local StartPosition
@@ -4852,6 +5727,53 @@ function Library:CreateWindow(WindowInfo)
         StartPosition = UDim2.new(Pos.X.Scale, Pos.X.Offset + Width / 2, Pos.Y.Scale, Pos.Y.Offset + Height / 2)
     else
         StartPosition = UDim2.fromOffset(math.floor(Screen.X / 2), math.floor(Screen.Y / 2))
+    end
+
+    --// Layouts \\--
+    -- Every layout positions the same pieces differently; ApplyLayout (at the end) does the work.
+    local Layouts = {
+        -- Big rounded window, title + subtitle, profile card, content on a floating panel.
+        Modern = {
+            TopHeight = 64, Sidebar = SidebarWidth, TabMode = "List", TabHeight = 40,
+            Footer = false, Lines = false, TabInfo = false, Title = "Left", Subtitle = true,
+            Profile = WindowInfo.ShowProfile, Panel = true, Corner = math.max(WindowInfo.CornerRadius, 16), PagePadding = 14,
+        },
+        -- The original Obsidian look: top bar, sidebar, divider lines, footer.
+        Classic = {
+            TopHeight = 48, Sidebar = SidebarWidth, TabMode = "List", TabHeight = 36,
+            Footer = true, Lines = true, TabInfo = true, Title = "Center", Subtitle = false,
+            Profile = false, Panel = false, Corner = WindowInfo.CornerRadius, PagePadding = 10,
+        },
+        -- Icon-only sidebar for the most content space (tab names show as tooltips).
+        Compact = {
+            TopHeight = 48, Sidebar = 60, TabMode = "Icons", TabHeight = 40,
+            Footer = true, Lines = true, TabInfo = true, Title = "Icon", Subtitle = false,
+            Profile = false, Panel = false, Corner = WindowInfo.CornerRadius, PagePadding = 10,
+        },
+        -- Tabs as a strip of pills under the title, no sidebar.
+        Topbar = {
+            TopHeight = 52, Sidebar = 0, Strip = 46, TabMode = "Strip", TabHeight = 32,
+            Footer = true, Lines = true, TabInfo = false, Title = "Left", Subtitle = false,
+            Profile = false, Panel = false, Corner = WindowInfo.CornerRadius, PagePadding = 10,
+        },
+    }
+    Library.LayoutNames = { "Modern", "Classic", "Compact", "Topbar" }
+
+    local LayoutName = if Layouts[WindowInfo.Layout] then WindowInfo.Layout else "Modern"
+    local Layout = Layouts[LayoutName]
+    Window.Layout = LayoutName
+    local ApplyLayout -- defined once every piece exists
+
+    -- Content edges for the current layout: top, bottom, left, and where a tab strip starts.
+    local function Geometry()
+        local TopEdge = Layout.TopHeight + (if Layout.Lines then 1 else 0)
+        local StripTop = TopEdge
+        if Layout.Strip then
+            TopEdge = StripTop + Layout.Strip + 1
+        end
+        local BottomEdge = if Layout.Footer then 21 else 0
+        local LeftEdge = if Layout.Sidebar > 0 then Layout.Sidebar + (if Layout.Lines then 1 else 0) else 0
+        return TopEdge, BottomEdge, LeftEdge, StripTop
     end
 
     --// Root holds the shadow + main frame so both move together \\--
@@ -4885,11 +5807,11 @@ function Library:CreateWindow(WindowInfo)
         ZIndex = 1,
         Parent = Root,
     })
-    Corner(Main, WindowInfo.CornerRadius)
+    local MainCorner = Corner(Main, WindowInfo.CornerRadius)
     Stroke(Main)
 
-    -- Nebula backdrop for nebula themes: a faint, slowly drifting copy of the theme's nebula
-    -- behind everything. Its CanvasGroup clips the clouds to the rounded corners.
+    -- Nebula backdrop: a faint, slowly drifting copy of the theme's nebula behind everything.
+    -- Its CanvasGroup clips the clouds to the rounded corners.
     local WindowNebula = CreateNebulaSkin(Main, {
         Background = false,
         Corner = WindowInfo.CornerRadius,
@@ -4912,7 +5834,7 @@ function Library:CreateWindow(WindowInfo)
         ZIndex = 2,
         Parent = Root,
     })
-    Corner(BorderLight, WindowInfo.CornerRadius)
+    local BorderCorner = Corner(BorderLight, WindowInfo.CornerRadius)
     local BorderStroke = New("UIStroke", {
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
         Color = "AccentColor",
@@ -4943,22 +5865,23 @@ function Library:CreateWindow(WindowInfo)
         Size = UDim2.new(1, 0, 0, 48),
         Parent = Main,
     })
-    MakeLine({ Position = UDim2.fromOffset(0, 48), Size = UDim2.new(1, 0, 0, 1), Parent = Main })
+    local TopLine = MakeLine({ Size = UDim2.new(1, 0, 0, 1), Parent = Main })
 
     local TitleHolder = New("Frame", {
         BackgroundTransparency = 1,
-        Size = UDim2.new(0, SidebarWidth, 1, 0),
+        Size = UDim2.fromScale(0, 1),
         Parent = TopBar,
     })
-    List(TitleHolder, 8, {
+    local TitleList = List(TitleHolder, 10, {
         FillDirection = Enum.FillDirection.Horizontal,
         HorizontalAlignment = Enum.HorizontalAlignment.Center,
         VerticalAlignment = Enum.VerticalAlignment.Center,
     })
 
     local WindowIcon = Library:GetIcon(WindowInfo.Icon)
+    local IconImage
     if WindowIcon then
-        local IconImage = New("ImageLabel", {
+        IconImage = New("ImageLabel", {
             ImageColor3 = WindowIcon.Custom and "WhiteColor" or "AccentColor",
             Size = UDim2.fromOffset(24, 24),
             Parent = TitleHolder,
@@ -4966,21 +5889,51 @@ function Library:CreateWindow(WindowInfo)
         ApplyIcon(IconImage, WindowIcon)
     end
 
+    -- Compact layout without an icon shows the title's first letter instead.
+    local Monogram = New("TextLabel", {
+        FontFace = Bold,
+        Size = UDim2.fromOffset(24, 24),
+        Text = WindowInfo.Title:sub(1, 1):upper(),
+        TextSize = 19,
+        Visible = false,
+        Parent = TitleHolder,
+    })
+
+    local TitleStack = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundTransparency = 1,
+        LayoutOrder = 1,
+        Size = UDim2.fromOffset(0, 0),
+        Parent = TitleHolder,
+    })
+    List(TitleStack, 1)
+
     local TitleLabel = New("TextLabel", {
         AutomaticSize = Enum.AutomaticSize.X,
         FontFace = Bold,
-        LayoutOrder = 1,
-        Size = UDim2.fromOffset(0, 20),
+        Size = UDim2.fromOffset(0, 22),
         Text = WindowInfo.Title,
         TextSize = 19,
-        Parent = TitleHolder,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = TitleStack,
+    })
+
+    local SubtitleLabel = New("TextLabel", {
+        AutomaticSize = Enum.AutomaticSize.X,
+        LayoutOrder = 1,
+        Size = UDim2.fromOffset(0, 15),
+        Text = WindowInfo.Subtitle or WindowInfo.Footer or "",
+        TextSize = 13,
+        TextTransparency = 0.5,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Visible = false,
+        Parent = TitleStack,
     })
 
     -- Current tab info (where Obsidian puts its tab title/description).
     local TabInfo = New("Frame", {
         BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(SidebarWidth + 1, 0),
-        Size = UDim2.new(1, -SidebarWidth - 1 - 56, 1, 0),
+        Size = UDim2.fromScale(0, 1),
         Parent = TopBar,
     })
     Padding(TabInfo, 0, 0, 14, 0)
@@ -5006,31 +5959,174 @@ function Library:CreateWindow(WindowInfo)
         Parent = TabInfo,
     })
 
-    --// Sidebar + divider \\--
-    MakeLine({ Position = UDim2.fromOffset(SidebarWidth, 49), Size = UDim2.new(0, 1, 1, -70), Parent = Main })
+    --// Window controls (top right): layout, settings, minimize, close \\--
+    local Controls = New("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(0, 30),
+        ZIndex = 3,
+        Parent = TopBar,
+    })
+    List(Controls, 4, {
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+    })
+
+    local function ControlButton(IconName, Fallback, Order)
+        local Button = New("ImageButton", {
+            BackgroundColor3 = "SecondaryColor",
+            BackgroundTransparency = 1,
+            LayoutOrder = Order,
+            Size = UDim2.fromOffset(30, 30),
+            ZIndex = 3,
+            Parent = Controls,
+        })
+        Corner(Button, 8)
+        local ButtonStroke = Stroke(Button, "OutlineColor", 1)
+
+        local IconData = Library:GetIcon(IconName)
+        local Glyph
+        if IconData then
+            Glyph = New("ImageLabel", {
+                ImageColor3 = "FontColor",
+                ImageTransparency = 0.4,
+                Position = UDim2.fromOffset(6, 6),
+                Size = UDim2.fromOffset(18, 18),
+                ZIndex = 3,
+                Parent = Button,
+            })
+            ApplyIcon(Glyph, IconData)
+        else
+            Glyph = New("TextLabel", {
+                Size = UDim2.fromScale(1, 1),
+                Text = Fallback,
+                TextSize = 17,
+                TextTransparency = 0.4,
+                ZIndex = 3,
+                Parent = Button,
+            })
+        end
+        local Property = if IconData then "ImageTransparency" else "TextTransparency"
+
+        local Control = { Button = Button, Stroke = ButtonStroke, Glyph = Glyph, Active = false }
+
+        function Control:SetActive(Active)
+            Control.Active = Active
+            Tween(Button, Library.FastTweenInfo, { BackgroundTransparency = Active and 0 or 1 })
+            Tween(ButtonStroke, Library.FastTweenInfo, { Transparency = Active and 0 or 1 })
+            Tween(Glyph, Library.FastTweenInfo, { [Property] = Active and 0 or 0.4 })
+        end
+
+        OnHover(Button, function()
+            Tween(Glyph, Library.FastTweenInfo, { [Property] = 0 })
+            if not Control.Active then
+                Tween(Button, Library.FastTweenInfo, { BackgroundTransparency = 0.5 })
+            end
+        end, function()
+            if not Control.Active then
+                Tween(Glyph, Library.FastTweenInfo, { [Property] = 0.4 })
+                Tween(Button, Library.FastTweenInfo, { BackgroundTransparency = 1 })
+            end
+        end)
+
+        return Control
+    end
+
+    local LayoutControl = ControlButton("layout-template", "#", 1)
+    local SettingsControl = ControlButton("settings", "*", 2)
+    local MinimizeControl = ControlButton("minus", "-", 3)
+    local CloseControl = ControlButton("x", "x", 4)
+    LayoutControl.Button.Visible = WindowInfo.ShowSettings
+    SettingsControl.Button.Visible = WindowInfo.ShowSettings
+    MinimizeControl.Button.Visible = WindowInfo.ShowControls
+    CloseControl.Button.Visible = WindowInfo.ShowControls
+
+    Window.Controls = {
+        Layout = LayoutControl.Button,
+        Settings = SettingsControl.Button,
+        Minimize = MinimizeControl.Button,
+        Close = CloseControl.Button,
+    }
+
+    local function ControlsWidth()
+        local Count = 0
+        for _, Control in { LayoutControl, SettingsControl, MinimizeControl, CloseControl } do
+            if Control.Button.Visible then
+                Count += 1
+            end
+        end
+        return 16 + Count * 34
+    end
+
+    --// Sidebar (tab list) \\--
+    local SideLine = MakeLine({ Size = UDim2.new(0, 1, 1, 0), Parent = Main })
 
     local Sidebar = RegisterScroll(New("ScrollingFrame", {
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.fromScale(0, 0),
-        Position = UDim2.fromOffset(0, 49),
-        Size = UDim2.new(0, SidebarWidth, 1, -70),
         Parent = Main,
     }))
-    List(Sidebar, 4)
-    Padding(Sidebar, 8, 8, 10, 10)
+    local SidebarList = List(Sidebar, 4)
+    local SidebarPadding = Padding(Sidebar, 8, 8, 10, 10)
+    local StripLine = MakeLine({ Size = UDim2.new(1, 0, 0, 1), Parent = Main })
+
+    local SidebarOrder = 0
+    local function NextSidebarOrder()
+        SidebarOrder += 1
+        return SidebarOrder
+    end
+
+    --// Profile card (Modern layout) \\--
+    local Profile = New("Frame", {
+        BackgroundTransparency = 1,
+        Visible = false,
+        Parent = Main,
+    })
+    local Avatar = New("ImageLabel", {
+        BackgroundColor3 = "SecondaryColor",
+        BackgroundTransparency = 0,
+        Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(LocalPlayer.UserId or 0) .. "&w=150&h=150",
+        Position = UDim2.new(0, 16, 0.5, -18),
+        Size = UDim2.fromOffset(36, 36),
+        Parent = Profile,
+    })
+    Corner(Avatar, UDim.new(1, 0))
+    Stroke(Avatar)
+    New("TextLabel", {
+        FontFace = SemiBold,
+        Position = UDim2.new(0, 62, 0.5, -17),
+        Size = UDim2.new(1, -74, 0, 18),
+        Text = LocalPlayer.DisplayName or LocalPlayer.Name,
+        TextSize = 15,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Profile,
+    })
+    New("TextLabel", {
+        Position = UDim2.new(0, 62, 0.5, 2),
+        Size = UDim2.new(1, -74, 0, 14),
+        Text = "@" .. tostring(LocalPlayer.Name),
+        TextSize = 12,
+        TextTransparency = 0.5,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = Profile,
+    })
 
     --// Content container \\--
     local Container = New("Frame", {
         BackgroundColor3 = "ContainerColor",
         ClipsDescendants = true,
-        Position = UDim2.fromOffset(SidebarWidth + 1, 49),
-        Size = UDim2.new(1, -SidebarWidth - 1, 1, -70),
         Parent = Main,
     })
+    local ContainerCorner = Corner(Container, 0)
+    local ContainerStroke = Stroke(Container)
 
-    -- Nebula themes: clouds drift behind the window (content area slightly see-through) and
-    -- the shadow becomes a colored glow. Monochrome hides the nebula.
-    -- (The window nebula follows the theme by itself.)
+    -- Nebula themes: clouds drift behind the window (content area see-through) and the
+    -- shadow becomes a colored glow. (The window nebula follows the theme by itself.)
     local function ApplyWindowTheme(Theme, Instant)
         local HasNebula = Theme.Colors ~= nil
         local ContainerTarget = if HasNebula then 0.6 else 0
@@ -5048,7 +6144,7 @@ function Library:CreateWindow(WindowInfo)
     ApplyWindowTheme(Library.CurrentTheme, true)
 
     --// Bottom bar \\--
-    MakeLine({
+    local BottomLine = MakeLine({
         AnchorPoint = Vector2.new(0, 1),
         Position = UDim2.new(0, 0, 1, -20),
         Size = UDim2.new(1, 0, 0, 1),
@@ -5091,8 +6187,10 @@ function Library:CreateWindow(WindowInfo)
     end
 
     --// Resizing \\--
+    local MinWidth = SidebarWidth + 320
+    local Grip
     if WindowInfo.Resizable then
-        local Grip = New("TextButton", {
+        Grip = New("TextButton", {
             AnchorPoint = Vector2.new(1, 1),
             BackgroundTransparency = 1,
             Position = UDim2.new(1, -2, 1, -2),
@@ -5121,7 +6219,7 @@ function Library:CreateWindow(WindowInfo)
             local Dpi = Library.DPIScale
             local Delta = Position - StartInput
             local Bounds = GetScreenSize()
-            local NewX = Even(math.clamp(StartSize.X + Delta.X / Dpi, SidebarWidth + 320, math.max(SidebarWidth + 320, Bounds.X / Dpi)))
+            local NewX = Even(math.clamp(StartSize.X + Delta.X / Dpi, MinWidth, math.max(MinWidth, Bounds.X / Dpi)))
             local NewY = Even(math.clamp(StartSize.Y + Delta.Y / Dpi, 300, math.max(300, Bounds.Y / Dpi)))
 
             -- Root is anchored at its centre; shift it by half the (on-screen) growth so the top-left stays put.
@@ -5135,7 +6233,7 @@ function Library:CreateWindow(WindowInfo)
     function Window.FitToScreen()
         local Bounds = GetScreenSize()
         local Dpi = Library.DPIScale
-        local MaxX = math.max(SidebarWidth + 320, (Bounds.X - 16) / Dpi)
+        local MaxX = math.max(MinWidth, (Bounds.X - 16) / Dpi)
         local MaxY = math.max(300, (Bounds.Y - 16) / Dpi)
         if Root.Size.X.Offset > MaxX or Root.Size.Y.Offset > MaxY then
             Root.Size = UDim2.fromOffset(Even(math.min(Root.Size.X.Offset, MaxX)), Even(math.min(Root.Size.Y.Offset, MaxY)))
@@ -5148,20 +6246,63 @@ function Library:CreateWindow(WindowInfo)
     Window.NebulaLayer = NebulaLayer
     Window.Scale = Scale
     Window.Container = Container
+    Window.Sidebar = Sidebar
+    Window.Profile = Profile
     Library.Window = Window
 
     function Window:SetTitle(Text)
         TitleLabel.Text = Text
+        Monogram.Text = tostring(Text):sub(1, 1):upper()
     end
     Window.ChangeTitle = Window.SetTitle
 
-    function Window:SetFooter(Text)
-        FooterLabel.Text = Text
+    function Window:SetSubtitle(Text)
+        SubtitleLabel.Text = Text or ""
+        if ApplyLayout then
+            ApplyLayout()
+        end
     end
 
-    -- Width available to a tab page's content (container minus its 10px padding on both sides).
+    function Window:SetFooter(Text)
+        FooterLabel.Text = Text
+        if not WindowInfo.Subtitle then
+            Window:SetSubtitle(Text)
+        end
+    end
+
+    -- Width available to a tab page's content (container minus its padding on both sides).
     local function ContentWidth()
-        return Root.Size.X.Offset - SidebarWidth - 1 - 20
+        local _, _, LeftEdge = Geometry()
+        return Root.Size.X.Offset - LeftEdge - Layout.PagePadding * 2
+    end
+
+    -- A small heading in the sidebar between tabs ("Demo").
+    function Window:AddSection(Text)
+        local Label = New("TextLabel", {
+            LayoutOrder = NextSidebarOrder(),
+            Size = UDim2.new(1, 0, 0, 26),
+            Text = Text,
+            TextSize = 13,
+            TextTransparency = 0.55,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Bottom,
+            Parent = Sidebar,
+        })
+        Padding(Label, 0, 4, 8, 0)
+
+        local Section = { Label = Label }
+
+        function Section:ApplyLayout()
+            Label.Visible = Layout.TabMode == "List"
+        end
+
+        function Section:SetText(NewText)
+            Label.Text = NewText
+        end
+
+        Section:ApplyLayout()
+        table.insert(Window.Sections, Section)
+        return Section
     end
 
     --// Tabs \\--
@@ -5184,12 +6325,16 @@ function Library:CreateWindow(WindowInfo)
         local TabButton = New("TextButton", {
             BackgroundColor3 = "SecondaryColor",
             BackgroundTransparency = 1,
-            LayoutOrder = #Window.Tabs,
+            LayoutOrder = NextSidebarOrder(),
             Size = UDim2.new(1, 0, 0, 36),
             Parent = Sidebar,
         })
         Corner(TabButton, 8)
         local ButtonStroke = Stroke(TabButton, "OutlineColor", 1)
+        local TabInset = New("UIPadding", { Parent = TabButton })
+
+        -- Compact layout shows tab names as tooltips.
+        local TabTooltip = Library:AddTooltip(nil, nil, TabButton)
 
         -- In nebula themes the selected tab is a nebula button too.
         local TabSkin = CreateNebulaSkin(TabButton, {
@@ -5205,9 +6350,10 @@ function Library:CreateWindow(WindowInfo)
         })
 
         local Indicator = New("Frame", {
+            AnchorPoint = Vector2.new(0, 0.5),
             BackgroundColor3 = "AccentColor",
             BackgroundTransparency = 1,
-            Position = UDim2.fromOffset(0, 18),
+            Position = UDim2.fromScale(0, 0.5),
             Size = UDim2.fromOffset(3, 0),
             ZIndex = 2,
             Parent = TabButton,
@@ -5218,9 +6364,10 @@ function Library:CreateWindow(WindowInfo)
         local IconData = Library:GetIcon(Icon)
         if IconData then
             TabIcon = New("ImageLabel", {
+                AnchorPoint = Vector2.new(0, 0.5),
                 ImageColor3 = IconData.Custom and "WhiteColor" or "AccentColor",
                 ImageTransparency = 0.5,
-                Position = UDim2.fromOffset(12, 9),
+                Position = UDim2.new(0, 12, 0.5, 0),
                 Size = UDim2.fromOffset(18, 18),
                 ZIndex = 2,
                 Parent = TabButton,
@@ -5253,7 +6400,7 @@ function Library:CreateWindow(WindowInfo)
             Visible = false,
             Parent = Container,
         }))
-        Padding(Page, 10, 10, 10, 10)
+        local PagePadding = Padding(Page, 10, 10, 10, 10)
         List(Page, 10)
 
         local SectionCount = 0
@@ -5295,11 +6442,12 @@ function Library:CreateWindow(WindowInfo)
             return Section
         end
 
-        Library:GiveSignal(Root:GetPropertyChangedSignal("Size"):Connect(function()
+        local function Relayout()
             for _, Section in ColumnSections do
                 LayoutColumns(Section)
             end
-        end))
+        end
+        Library:GiveSignal(Root:GetPropertyChangedSignal("Size"):Connect(Relayout))
 
         Tab.Button = TabButton
         Tab.Container = Page
@@ -5318,12 +6466,62 @@ function Library:CreateWindow(WindowInfo)
             Tween(TabLabel, TweenData, { TextTransparency = Selected and 0 or 0.5 })
             Tween(Indicator, TweenData, {
                 BackgroundTransparency = Selected and 0 or 1,
-                Position = UDim2.fromOffset(0, Selected and 9 or 18),
                 Size = UDim2.fromOffset(3, Selected and 18 or 0),
             })
             if TabIcon then
                 Tween(TabIcon, TweenData, { ImageTransparency = Selected and 0 or 0.5 })
             end
+        end
+
+        -- Restyle this tab's button and page for the current layout.
+        function Tab:ApplyLayout()
+            local Mode = Layout.TabMode
+            local Strip = Mode == "Strip"
+
+            TabButton.AutomaticSize = if Strip then Enum.AutomaticSize.X else Enum.AutomaticSize.None
+            TabButton.Size = if Strip then UDim2.fromOffset(0, Layout.TabHeight) else UDim2.new(1, 0, 0, Layout.TabHeight)
+            TabInset.PaddingRight = UDim.new(0, if Strip then 14 else 0)
+            Indicator.Visible = not Strip
+            TabTooltip.Text = if Mode == "Icons" then Name else nil
+
+            if Mode == "Icons" then
+                if TabIcon then
+                    TabIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+                    TabIcon.Position = UDim2.fromScale(0.5, 0.5)
+                end
+                -- No icon: show the first letter.
+                TabLabel.Visible = TabIcon == nil
+                TabLabel.AutomaticSize = Enum.AutomaticSize.None
+                TabLabel.Position = UDim2.fromOffset(0, 0)
+                TabLabel.Size = UDim2.fromScale(1, 1)
+                TabLabel.Text = Name:sub(1, 1):upper()
+                TabLabel.TextXAlignment = Enum.TextXAlignment.Center
+            else
+                if TabIcon then
+                    TabIcon.AnchorPoint = Vector2.new(0, 0.5)
+                    TabIcon.Position = UDim2.new(0, if Strip then 12 else 14, 0.5, 0)
+                end
+                local TextX = if TabIcon then (if Strip then 38 else 42) else 14
+                TabLabel.Visible = true
+                TabLabel.Text = Name
+                TabLabel.TextXAlignment = Enum.TextXAlignment.Left
+                TabLabel.Position = UDim2.fromOffset(TextX, 0)
+                if Strip then
+                    TabLabel.AutomaticSize = Enum.AutomaticSize.X
+                    TabLabel.Size = UDim2.fromScale(0, 1)
+                else
+                    TabLabel.AutomaticSize = Enum.AutomaticSize.None
+                    TabLabel.Size = UDim2.new(1, -TextX - 8, 1, 0)
+                end
+            end
+            TabLabel.TextSize = if Layout.TabHeight >= 40 then 15 else 14
+
+            local Inset = UDim.new(0, Layout.PagePadding)
+            PagePadding.PaddingTop = Inset
+            PagePadding.PaddingBottom = Inset
+            PagePadding.PaddingLeft = Inset
+            PagePadding.PaddingRight = Inset
+            Relayout()
         end
 
         function Tab:Show()
@@ -5411,6 +6609,7 @@ function Library:CreateWindow(WindowInfo)
 
         table.insert(Window.Tabs, Tab)
         Library.Tabs[Name] = Tab
+        Tab:ApplyLayout()
 
         if #Window.Tabs == 1 then
             Tab:Show()
@@ -5423,41 +6622,10 @@ function Library:CreateWindow(WindowInfo)
     local PanelWidth = 280
     local SettingsOpen = false
 
-    local SettingsButton = New("ImageButton", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        BackgroundColor3 = "SecondaryColor",
-        BackgroundTransparency = 1,
-        Position = UDim2.new(1, -12, 0.5, 0),
-        Size = UDim2.fromOffset(30, 30),
-        Visible = WindowInfo.ShowSettings,
-        ZIndex = 3,
-        Parent = TopBar,
-    })
-    Corner(SettingsButton, 8)
-    local SettingsStroke = Stroke(SettingsButton, "OutlineColor", 1)
-
-    local GearIcon = Library:GetIcon("settings")
-    local Gear
-    if GearIcon then
-        Gear = New("ImageLabel", {
-            ImageColor3 = "FontColor",
-            ImageTransparency = 0.4,
-            Position = UDim2.fromOffset(6, 6),
-            Size = UDim2.fromOffset(18, 18),
-            ZIndex = 3,
-            Parent = SettingsButton,
-        })
-        ApplyIcon(Gear, GearIcon)
-    else
-        Gear = New("TextLabel", {
-            Size = UDim2.fromScale(1, 1),
-            Text = "⚙",
-            TextSize = 17,
-            TextTransparency = 0.4,
-            ZIndex = 3,
-            Parent = SettingsButton,
-        })
-    end
+    local SettingsButton = SettingsControl.Button
+    local Gear = SettingsControl.Glyph
+    local PanelTop = 49
+    local PanelBottom = 21
 
     local Overlay = New("TextButton", {
         BackgroundColor3 = "DarkColor",
@@ -5553,11 +6721,10 @@ function Library:CreateWindow(WindowInfo)
         end
 
         Tween(Panel, Library.TweenInfo, {
-            Position = UDim2.new(1, Open and -PanelWidth or 0, 0, 49),
+            Position = UDim2.new(1, Open and -PanelWidth or 0, 0, PanelTop),
         })
         Tween(Gear, Library.TweenInfo, { Rotation = Open and 90 or 0 })
-        Tween(SettingsButton, Library.FastTweenInfo, { BackgroundTransparency = Open and 0 or 1 })
-        Tween(SettingsStroke, Library.FastTweenInfo, { Transparency = Open and 0 or 1 })
+        SettingsControl:SetActive(Open)
         local Fade = Tween(Overlay, Library.FastTweenInfo, { BackgroundTransparency = Open and 0.45 or 1 })
 
         if not Open then
@@ -5591,12 +6758,103 @@ function Library:CreateWindow(WindowInfo)
             Window:SetSettingsOpen(false)
         end
     end)
-    OnHover(SettingsButton, function()
-        if not SettingsOpen then
-            Tween(Gear, Library.FastTweenInfo, Gear:IsA("ImageLabel") and { ImageTransparency = 0 } or { TextTransparency = 0 })
+
+    --// Minimize / close / layout controls \\--
+    local Minimized = false
+    local ExpandedHeight
+
+    function Window:IsMinimized()
+        return Minimized
+    end
+
+    -- Folds the window up to its top bar (the top edge stays where it is).
+    function Window:SetMinimized(Value)
+        Value = Value == true
+        if Value == Minimized then
+            return
         end
-    end, function()
-        Tween(Gear, Library.FastTweenInfo, Gear:IsA("ImageLabel") and { ImageTransparency = 0.4 } or { TextTransparency = 0.4 })
+        Minimized = Value
+        CloseOpenedPopup()
+        if Value then
+            Window:SetSettingsOpen(false)
+        end
+
+        local OldHeight = Root.Size.Y.Offset
+        local NewHeight
+        if Value then
+            ExpandedHeight = OldHeight
+            NewHeight = Layout.TopHeight
+        else
+            NewHeight = ExpandedHeight or OldHeight
+        end
+
+        Tween(Root, Library.TweenInfo, {
+            Size = UDim2.fromOffset(Root.Size.X.Offset, NewHeight),
+            Position = Root.Position + UDim2.fromOffset(0, math.floor((NewHeight - OldHeight) * Library.DPIScale / 2)),
+        })
+        if Grip then
+            Grip.Visible = not Value
+        end
+        MinimizeControl:SetActive(Value)
+    end
+
+    MinimizeControl.Button.MouseButton1Click:Connect(function()
+        if Library:CanInteract() then
+            Window:SetMinimized(not Minimized)
+        end
+    end)
+
+    local CloseHintShown = false
+    CloseControl.Button.MouseButton1Click:Connect(function()
+        if not Library:CanInteract() then
+            return
+        end
+        Library:Toggle(false)
+        if not CloseHintShown then
+            CloseHintShown = true
+            local Key = Library.ToggleKeybind and Library.ToggleKeybind.Name or "your menu key"
+            Library:Notify({
+                Title = "Menu hidden",
+                Description = if Library.IsMobile then "Tap Toggle to open it again." else "Press " .. Key .. " to open it again.",
+                Icon = "eye-off",
+                Time = 4,
+            })
+        end
+    end)
+
+    function Window:GetLayout()
+        return LayoutName
+    end
+
+    function Window:SetLayout(Name)
+        if not Layouts[Name] then
+            warn("[Ui3] Unknown layout '" .. tostring(Name) .. "'")
+            return false
+        end
+        if Minimized then
+            Window:SetMinimized(false)
+        end
+        LayoutName = Name
+        Layout = Layouts[Name]
+        Window.Layout = Name
+        if ApplyLayout then
+            ApplyLayout()
+        end
+        return true
+    end
+
+    -- The layout button cycles through the layouts (and keeps the settings dropdown in sync).
+    LayoutControl.Button.MouseButton1Click:Connect(function()
+        if not Library:CanInteract() then
+            return
+        end
+        local Names = Library.LayoutNames
+        local Next = Names[(table.find(Names, LayoutName) or 0) % #Names + 1]
+        if Options.Ui3_Layout then
+            Options.Ui3_Layout:SetValue(Next)
+        else
+            Window:SetLayout(Next)
+        end
     end)
 
     -- Settings sections are ordinary groupboxes, so they use the exact same elements.
@@ -5634,20 +6892,33 @@ function Library:CreateWindow(WindowInfo)
         end,
     })
 
+    MenuBox:AddDropdown("Ui3_Layout", {
+        Text = "Layout",
+        Values = Library.LayoutNames,
+        Default = LayoutName,
+        Callback = function(Value)
+            if Value then
+                Window:SetLayout(Value)
+            end
+        end,
+    })
+
+    -- "Auto" follows the screen size; a fixed % stays put.
     local DPIValues = { 50, 75, 90, 100, 110, 125, 150, 175, 200 }
     local CurrentDPI = math.floor(Library.DPIScale * 100 + 0.5)
-    if not table.find(DPIValues, CurrentDPI) then
+    if not Library.AutoScale and not table.find(DPIValues, CurrentDPI) then
         table.insert(DPIValues, CurrentDPI)
         table.sort(DPIValues)
     end
     for Index, Value in DPIValues do
         DPIValues[Index] = Value .. "%"
     end
+    table.insert(DPIValues, 1, "Auto")
 
     MenuBox:AddDropdown("Ui3_DPI", {
         Text = "DPI scale",
         Values = DPIValues,
-        Default = CurrentDPI .. "%",
+        Default = if Library.AutoScale then "Auto" else CurrentDPI .. "%",
         Callback = function(Value)
             if Value then
                 Library:SetDPIScale(Value)
@@ -5943,6 +7214,114 @@ function Library:CreateWindow(WindowInfo)
             Library:Unload()
         end,
     })
+
+    --// Apply the current layout to every piece of the window \\--
+    ApplyLayout = function()
+        local TopEdge, BottomEdge, LeftEdge, StripTop = Geometry()
+        local Strip = Layout.TabMode == "Strip"
+
+        local Radius = UDim.new(0, Layout.Corner)
+        MainCorner.CornerRadius = Radius
+        BorderCorner.CornerRadius = Radius
+        if WindowNebula.CornerObject then
+            WindowNebula.CornerObject.CornerRadius = Radius
+        end
+
+        --// Top bar + title \\--
+        TopBar.Size = UDim2.new(1, 0, 0, Layout.TopHeight)
+        TopLine.Visible = Layout.Lines
+        TopLine.Position = UDim2.fromOffset(0, Layout.TopHeight)
+
+        local TitleMode = Layout.Title
+        TitleStack.Visible = TitleMode ~= "Icon"
+        Monogram.Visible = TitleMode == "Icon" and IconImage == nil
+        SubtitleLabel.Visible = Layout.Subtitle == true and SubtitleLabel.Text ~= ""
+        TitleLabel.TextSize = if Layout.Subtitle then 18 else 19
+        if IconImage then
+            -- Lucide icons are 24px sprites; only custom images get the bigger logo size.
+            local Size = if Layout.Subtitle and WindowIcon.Custom then 36 else 24
+            IconImage.Size = UDim2.fromOffset(Size, Size)
+        end
+
+        if TitleMode == "Left" then
+            TitleHolder.Position = UDim2.fromOffset(18, 0)
+            TitleHolder.Size = UDim2.new(1, -18 - ControlsWidth(), 1, 0)
+            TitleList.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        else
+            TitleHolder.Position = UDim2.fromOffset(0, 0)
+            TitleHolder.Size = UDim2.new(0, math.max(Layout.Sidebar, 60), 1, 0)
+            TitleList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+
+        TabInfo.Visible = Layout.TabInfo
+        TabInfo.Position = UDim2.fromOffset(LeftEdge, 0)
+        TabInfo.Size = UDim2.new(1, -LeftEdge - ControlsWidth(), 1, 0)
+
+        --// Tabs: sidebar list, icon rail or top strip \\--
+        local ProfileHeight = if Layout.Profile then 64 else 0
+        if Strip then
+            Sidebar.Position = UDim2.fromOffset(0, StripTop)
+            Sidebar.Size = UDim2.new(1, 0, 0, Layout.Strip)
+            Sidebar.ScrollingDirection = Enum.ScrollingDirection.X
+            Sidebar.AutomaticCanvasSize = Enum.AutomaticSize.X
+            SidebarList.FillDirection = Enum.FillDirection.Horizontal
+            SidebarList.VerticalAlignment = Enum.VerticalAlignment.Center
+            SidebarList.Padding = UDim.new(0, 6)
+            SidebarPadding.PaddingTop = UDim.new(0, 0)
+            SidebarPadding.PaddingBottom = UDim.new(0, 0)
+            SidebarPadding.PaddingLeft = UDim.new(0, 12)
+            SidebarPadding.PaddingRight = UDim.new(0, 12)
+        else
+            Sidebar.Position = UDim2.fromOffset(0, TopEdge)
+            Sidebar.Size = UDim2.new(0, Layout.Sidebar, 1, -TopEdge - BottomEdge - ProfileHeight)
+            Sidebar.ScrollingDirection = Enum.ScrollingDirection.Y
+            Sidebar.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            SidebarList.FillDirection = Enum.FillDirection.Vertical
+            SidebarList.VerticalAlignment = Enum.VerticalAlignment.Top
+            SidebarList.Padding = UDim.new(0, if Layout.TabMode == "Icons" then 6 else 4)
+            local Side = if Layout.TabMode == "Icons" then 10 else 12
+            SidebarPadding.PaddingTop = UDim.new(0, 8)
+            SidebarPadding.PaddingBottom = UDim.new(0, 8)
+            SidebarPadding.PaddingLeft = UDim.new(0, Side)
+            SidebarPadding.PaddingRight = UDim.new(0, Side)
+        end
+        Sidebar.CanvasPosition = Vector2.new(0, 0)
+
+        StripLine.Visible = Strip
+        StripLine.Position = UDim2.fromOffset(0, StripTop + (Layout.Strip or 0))
+        SideLine.Visible = Layout.Lines and Layout.Sidebar > 0
+        SideLine.Position = UDim2.fromOffset(Layout.Sidebar, TopEdge)
+        SideLine.Size = UDim2.new(0, 1, 1, -TopEdge - BottomEdge)
+
+        Profile.Visible = Layout.Profile == true
+        Profile.Position = UDim2.new(0, 0, 1, -BottomEdge - ProfileHeight)
+        Profile.Size = UDim2.new(0, Layout.Sidebar, 0, ProfileHeight)
+
+        --// Content \\--
+        Container.Position = UDim2.fromOffset(LeftEdge, TopEdge)
+        Container.Size = UDim2.new(1, -LeftEdge, 1, -TopEdge - BottomEdge)
+        ContainerCorner.CornerRadius = UDim.new(0, if Layout.Panel then 16 else 0)
+        ContainerStroke.Enabled = Layout.Panel == true
+
+        BottomLine.Visible = Layout.Footer
+        BottomBar.Visible = Layout.Footer
+
+        --// Settings panel: everything below the top bar \\--
+        PanelTop = Layout.TopHeight + (if Layout.Lines then 1 else 0)
+        PanelBottom = BottomEdge
+        Overlay.Position = UDim2.fromOffset(0, PanelTop)
+        Overlay.Size = UDim2.new(1, 0, 1, -PanelTop - PanelBottom)
+        Panel.Position = UDim2.new(1, if SettingsOpen then -PanelWidth else 0, 0, PanelTop)
+        Panel.Size = UDim2.new(0, PanelWidth, 1, -PanelTop - PanelBottom)
+
+        for _, Section in Window.Sections do
+            Section:ApplyLayout()
+        end
+        for _, Tab in Window.Tabs do
+            Tab:ApplyLayout()
+        end
+    end
+    ApplyLayout()
 
     --// Mobile open/close button \\--
     if Library.IsMobile then
