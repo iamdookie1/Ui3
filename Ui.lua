@@ -78,6 +78,11 @@ local Library = {
         Groupbox = 0.25,
         Element = 0.12,
     },
+    -- What SetTransparency asked for; glass themes override it while they're active.
+    BaseTransparency = {
+        Groupbox = 0.25,
+        Element = 0.12,
+    },
     TransparencyRegistry = {},
 
     -- DPI scaling (like Obsidian): every top level piece of UI has a UIScale in Library.Scales.
@@ -340,6 +345,26 @@ local ShineSequence = ColorSequence.new({
 })
 
 Library.ShineGradients = {}
+Library.GlassGradients = {}
+
+-- Glass themes: a surface is lit from the top (whiter, more solid) and clearer at the bottom.
+local GlassColor = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(196, 200, 208))
+local GlassFade = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(1, 0.35),
+})
+
+local function GlassGradient(Parent)
+    local Gradient = New("UIGradient", {
+        Color = GlassColor,
+        Enabled = Library.CurrentTheme ~= nil and Library.CurrentTheme.Glass ~= nil,
+        Rotation = 90,
+        Transparency = GlassFade,
+        Parent = Parent,
+    })
+    table.insert(Library.GlassGradients, Gradient)
+    return Gradient
+end
 
 local function Sheen(Parent)
     local Gradient = New("UIGradient", {
@@ -455,6 +480,27 @@ Library.Themes = {
         Colors = { Hex("#2b2b2b"), Hex("#8c8c8c"), Hex("#ececec"), Hex("#0b0b0b") },
         Glow = Color3.fromRGB(200, 200, 200),
         Duration = 16, Delay = -3, Twinkle = 3, TwinkleDelay = 0,
+    },
+    {
+        Name = "Liquid",
+        -- Frosted glass: see-through grey surfaces with light rims, a slow silver liquid sheen
+        -- and a band of light that glides across the window now and then.
+        Scheme = {
+            BackgroundColor = Color3.fromRGB(30, 32, 37),
+            ContainerColor = Color3.fromRGB(50, 53, 60),
+            MainColor = Color3.fromRGB(76, 80, 88),
+            SecondaryColor = Color3.fromRGB(102, 106, 115),
+            OutlineColor = Color3.fromRGB(148, 152, 160),
+            AccentColor = Color3.fromRGB(238, 241, 246),
+            ShadowColor = Color3.fromRGB(0, 0, 0),
+        },
+        Colors = { Hex("#3a3f48"), Hex("#9aa3b2"), Hex("#f4f7fb"), Hex("#1b1d22") },
+        Glow = Color3.fromRGB(215, 220, 230),
+        Stars = false,
+        -- Background transparency while this theme is on (0 solid, 1 invisible); Nebula is how
+        -- faint the liquid sheen is on the window, Glare the seconds between light sweeps.
+        Glass = { Window = 0.3, Container = 0.5, Groupbox = 0.45, Element = 0.5, Button = 0.35, Nebula = 0.8, Glare = 7 },
+        Duration = 18, Delay = -6, Twinkle = 4, TwinkleDelay = 0,
     },
     {
         Name = "Violet",
@@ -579,6 +625,30 @@ function Library:SetTheme(Name, Instant)
             From[Key] = Library.Scheme[Key]
         end
         ThemeTransition = { From = From, To = Target, Start = os.clock(), Duration = 0.35 }
+    end
+
+    -- Glass themes bring their own transparency; other themes use what SetTransparency set.
+    local Glass = Theme.Glass
+    for Role, Base in Library.BaseTransparency do
+        Library.Transparency[Role] = if Glass and Glass[Role] then Glass[Role] else Base
+    end
+    for Object, Role in Library.TransparencyRegistry do
+        local Target = Library.Transparency[Role] or 0
+        if Instant then
+            Object.BackgroundTransparency = Target
+        else
+            Tween(Object, Library.TweenInfo, { BackgroundTransparency = Target })
+        end
+    end
+    local Index = 1
+    while Index <= #Library.GlassGradients do
+        local Gradient = Library.GlassGradients[Index]
+        if Gradient.Parent == nil then
+            table.remove(Library.GlassGradients, Index)
+        else
+            Gradient.Enabled = Glass ~= nil
+            Index += 1
+        end
     end
 
     for _, Hook in Library.ThemeHooks do
@@ -822,6 +892,12 @@ local function CreateNebulaSkin(Parent, Settings)
             return
         end
         Canvas.BackgroundColor3 = Colors[4]
+        if Settings.Background ~= false then
+            Canvas.BackgroundTransparency = if Theme.Glass and not Settings.Preview then Theme.Glass.Button or 0 else 0
+        end
+        for _, Star in Skin.Stars do
+            Star.Dot.Visible = Theme.Stars ~= false
+        end
         for _, Cloud in Skin.Clouds do
             Cloud.Fill.BackgroundColor3 = Saturate(Colors[Cloud.Spec.Color], 1.3)
         end
@@ -837,12 +913,16 @@ local function CreateNebulaSkin(Parent, Settings)
             HasColors = Theme.Colors ~= nil or (Settings.Preview == true and Theme.PreviewColors ~= nil)
         end
         local Show = Skin.Wanted == true and HasColors
-        if Show == Skin.Shown and not Instant then
+        if Show == Skin.Shown and not Instant and not Settings.Backdrop then
             return
         end
         Skin.Shown = Show
 
-        local GroupTarget = if Show then (Settings.VisibleTransparency or 0) else 1
+        local Visible = Settings.VisibleTransparency or 0
+        if Settings.Backdrop and Theme and Theme.Glass and Theme.Glass.Nebula then
+            Visible = Theme.Glass.Nebula
+        end
+        local GroupTarget = if Show then Visible else 1
         local GlowTarget = if Show then (Settings.GlowTransparency or 0.55) else 1
 
         if Settings.OnVisibility then
@@ -1005,6 +1085,7 @@ function Library:SetTransparency(Values)
     for Role, Value in Values do
         if Library.Transparency[Role] ~= nil and tonumber(Value) then
             Library.Transparency[Role] = math.clamp(tonumber(Value), 0, 1)
+            Library.BaseTransparency[Role] = Library.Transparency[Role]
         end
     end
     for Object, Role in Library.TransparencyRegistry do
@@ -5203,6 +5284,7 @@ local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
     })
     Corner(Box, Library.CornerRadius)
     Stroke(Box)
+    GlassGradient(Box)
     List(Box, 0)
 
     local Header = New("Frame", {
@@ -5766,6 +5848,7 @@ function Library:CreateWindow(WindowInfo)
     -- Its CanvasGroup clips the clouds to the rounded corners.
     local WindowNebula = CreateNebulaSkin(Main, {
         Background = false,
+        Backdrop = true,
         Corner = WindowInfo.CornerRadius,
         FollowTheme = true,
         LayerScale = 1.5,
@@ -5777,6 +5860,42 @@ function Library:CreateWindow(WindowInfo)
         end,
     })
     local NebulaLayer = WindowNebula.Canvas
+    GlassGradient(Main)
+
+    -- Glass themes: a soft band of light glides across the window now and then.
+    local Glare = New("Frame", {
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+        ZIndex = 0,
+        Parent = Main,
+    })
+    local GlareCorner = Corner(Glare, WindowInfo.CornerRadius)
+    local GlareGradient = New("UIGradient", {
+        Offset = Vector2.new(-1, 0),
+        Rotation = 25,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.4, 1),
+            NumberSequenceKeypoint.new(0.5, 0.9),
+            NumberSequenceKeypoint.new(0.6, 1),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+        Parent = Glare,
+    })
+    local GlareSweep = 2.4 -- seconds one sweep takes
+    Library:GiveSignal(RunService.Heartbeat:Connect(function()
+        if not Glare.Visible or not Library.Toggled then
+            return
+        end
+        local Glass = Library.CurrentTheme.Glass
+        local Progress = (os.clock() % math.max((Glass and Glass.Glare) or 7, GlareSweep)) / GlareSweep
+        if Library.ThemeAnimation.Enabled == false or Progress > 1 then
+            Progress = 0
+        end
+        Progress = Progress * Progress * (3 - 2 * Progress)
+        GlareGradient.Offset = Vector2.new(-1 + 2 * Progress, 0)
+    end))
 
     -- Border light: a second, see-through outline on top of the window border. A rotating
     -- gradient makes one stretch of it bright, so a light travels around the frame.
@@ -6075,20 +6194,28 @@ function Library:CreateWindow(WindowInfo)
     })
     local ContainerCorner = Corner(Container, 0)
     local ContainerStroke = Stroke(Container)
+    GlassGradient(Container)
 
     -- Nebula themes: clouds drift behind the window (content area see-through) and the
     -- shadow becomes a colored glow. (The window nebula follows the theme by itself.)
+    -- Glass themes: the window itself is see-through and the glare sweeps across it.
     local function ApplyWindowTheme(Theme, Instant)
         local HasNebula = Theme.Colors ~= nil
-        local ContainerTarget = if HasNebula then 0.6 else 0
-        local ShadowTarget = if HasNebula then 0.45 else 0.25
+        local Glass = Theme.Glass
+        local ContainerTarget = if Glass then Glass.Container or 0.5 elseif HasNebula then 0.6 else 0
+        local MainTarget = if Glass then Glass.Window or 0.3 else 0
+        local ShadowTarget = if Glass then 0.55 elseif HasNebula then 0.45 else 0.25
+        Glare.Visible = Glass ~= nil
+        GlareGradient.Offset = Vector2.new(-1, 0)
 
         if Instant then
             Container.BackgroundTransparency = ContainerTarget
+            Main.BackgroundTransparency = MainTarget
             WindowShadow.ImageTransparency = ShadowTarget
             return
         end
         Tween(Container, Library.TweenInfo, { BackgroundTransparency = ContainerTarget })
+        Tween(Main, Library.TweenInfo, { BackgroundTransparency = MainTarget })
         Tween(WindowShadow, Library.TweenInfo, { ImageTransparency = ShadowTarget })
     end
     table.insert(Library.ThemeHooks, ApplyWindowTheme)
@@ -7178,6 +7305,7 @@ function Library:CreateWindow(WindowInfo)
         local Radius = UDim.new(0, Layout.Corner)
         MainCorner.CornerRadius = Radius
         BorderCorner.CornerRadius = Radius
+        GlareCorner.CornerRadius = Radius
         if WindowNebula.CornerObject then
             WindowNebula.CornerObject.CornerRadius = Radius
         end
