@@ -511,7 +511,7 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 | Theme | Look |
 | --- | --- |
 | `Monochrome` | Default. Black and white: smoke-grey nebula, soft white highlights |
-| `Liquid` | Frosted glass: the window, groupboxes and elements turn see-through so the game shows behind them, lit from the top with light rims, a faint silver liquid sheen and a band of light that glides across the window every few seconds |
+| `Liquid` | Liquid glass: a smoky see-through window with the game behind it, groupboxes and elements as light frosted panes, white rims that catch the light at the top left and fade around the edges, a faint silver liquid sheen and a band of light that glides across the window every few seconds |
 | `Violet` | Deep purple nebula, lilac accent |
 | `Ocean` | Navy nebula, sky blue accent |
 | `Magenta` | Plum nebula, hot pink accent |
@@ -542,7 +542,7 @@ Library:AddTheme({
 })
 ```
 
-A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). `Stars = false` turns the stars off. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
+A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). `Stars = false` turns the stars off. A glass theme's `Scheme` can also set `GroupboxColor` and `ElementColor` (the frost tint of groupboxes and elements) and `RimColor` (borders, which get a top-left light in glass themes); other themes use Main / Secondary / Outline for these. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
 
 The accent always comes from the theme, so `Library:SetAccent` only prints a warning.
 
