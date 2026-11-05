@@ -95,6 +95,7 @@ local Window = Library:CreateWindow({
 	ShowSettings = true,        -- the gear icon, layout button and settings panel
 	ShowControls = true,        -- minimize and close buttons
 	ShowProfile = true,         -- avatar card at the bottom of the sidebar (Modern layout)
+	Blur = false,               -- glass blur behind the window on glass themes (toggle in settings)
 	ConfigFolder = nil,         -- defaults to "Ui3/<Title>"
 	AutoLoad = true,            -- load the autoload config on start
 	Font = nil,                 -- Font or Enum.Font
@@ -498,6 +499,19 @@ Library:Toggle(true)
 
 Library:OnUnload(function() print("bye") end)
 Library:Unload()
+```
+
+### Glass blur
+
+On glass themes like Liquid, players can turn on **Glass blur** in settings (saved in configs) to blur the game behind the window. Roblox can't blur behind UI directly, so it uses the depth of field trick: a nearly invisible glass pane sits right in front of the camera, sized to the window's rectangle on screen, and a `DepthOfFieldEffect` blurs what's seen through it. Only the area behind the window is blurred, and the pane follows the window as it moves, resizes, minimizes or scales.
+
+- It only runs while the menu is open on a glass theme; hiding the menu or switching themes turns it off.
+- While it runs, the game's own depth of field effects are paused, and they come back afterwards.
+- Glass renders at graphics quality 8 and up. On lower settings there's no blur, just the normal glass theme.
+
+```lua
+Library:SetBlur(true)
+print(Library.BlurEnabled)
 ```
 
 ### Transparency

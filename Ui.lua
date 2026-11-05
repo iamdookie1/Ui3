@@ -1909,6 +1909,7 @@ local Templates = {
         ShowControls = true, -- minimize + close buttons
         ShowProfile = true, -- avatar card in the Modern layout
         Layout = "Modern", -- Modern, Classic, Compact
+        Blur = false, -- glass blur behind the window (glass themes; players can toggle it in settings)
     },
     Groupbox = {
         Side = "Left",
@@ -5788,6 +5789,151 @@ function Library:Unload()
     ScreenGui:Destroy()
 end
 
+--// Glass blur \\--
+-- Roblox can't blur behind UI, so this uses the depth of field trick: a nearly invisible glass
+-- pane sits right in front of the camera, sized to the window's rectangle on screen, and a
+-- DepthOfFieldEffect blurs the game seen through it. Only the area behind the window is
+-- blurred; the rest of the screen stays sharp. It runs only while the menu is open on a glass
+-- theme (like Liquid). Glass renders at graphics quality 8 and up, so lower settings show no blur.
+Library.BlurEnabled = false
+do
+    local Lighting = cloneref(game:GetService("Lighting"))
+    local Effect, Pane, Mesh, RenderConnection
+    local Paused = {} -- the game's own depth of field effects, turned off while the blur runs
+    local Active = false
+
+    local function PointToWorld(Camera, Point)
+        local Ray = Camera:ScreenPointToRay(Point.X, Point.Y)
+        return Ray.Origin + Ray.Direction * 0.001
+    end
+
+    local function Render()
+        local Camera = workspace.CurrentCamera
+        local Window = Library.Window
+        if not Camera or not Pane or not Window then
+            return
+        end
+        if Pane.Parent ~= Camera then
+            Pane.Parent = Camera
+        end
+
+        -- Pull the edges in a little: the blur bleeds outwards and the window has round corners.
+        local Main = Window.Main
+        local Inset = 8 + Camera.ViewportSize.Y / 2560 * 48
+        local Size = Main.AbsoluteSize - Vector2.new(Inset, Inset)
+        if Size.X <= 0 or Size.Y <= 0 then
+            Mesh.Scale = Vector3.new(0, 0, 0)
+            return
+        end
+        local TopLeft = Main.AbsolutePosition + Vector2.new(Inset / 2, Inset / 2)
+        local A = PointToWorld(Camera, TopLeft)
+        local B = PointToWorld(Camera, TopLeft + Vector2.new(Size.X, 0))
+        local C = PointToWorld(Camera, TopLeft + Size)
+
+        local View = Camera.CFrame
+        Pane.CFrame = CFrame.fromMatrix((A + C) / 2, View.XVector, View.YVector, View.ZVector)
+        Mesh.Scale = Vector3.new((B - A).Magnitude, (B - C).Magnitude, 0)
+    end
+
+    local function PauseGameEffects()
+        local Camera = workspace.CurrentCamera
+        for _, Holder in { Lighting, Camera } do
+            if Holder then
+                for _, Child in Holder:GetChildren() do
+                    if Child:IsA("DepthOfFieldEffect") and Child ~= Effect and Child.Enabled then
+                        Paused[Child] = true
+                        Child.Enabled = false
+                    end
+                end
+            end
+        end
+    end
+
+    local function Start()
+        Effect = Instance.new("DepthOfFieldEffect")
+        Effect.FarIntensity = 0
+        Effect.InFocusRadius = 0.1
+        Effect.NearIntensity = 1
+        PauseGameEffects()
+        Effect.Parent = Lighting
+
+        Pane = Instance.new("Part")
+        Pane.Name = "Ui3Glass"
+        Pane.Anchored = true
+        Pane.CanCollide = false
+        Pane.CanQuery = false
+        Pane.CanTouch = false
+        Pane.CastShadow = false
+        Pane.Color = Color3.new(0, 0, 0)
+        Pane.Material = Enum.Material.Glass
+        Pane.Size = Vector3.new(1, 1, 0)
+        Pane.Transparency = 0.98
+        Mesh = Instance.new("SpecialMesh")
+        Mesh.MeshType = Enum.MeshType.Brick
+        Mesh.Offset = Vector3.new(0, 0, -0.000001)
+        Mesh.Parent = Pane
+        Pane.Parent = workspace.CurrentCamera or workspace
+
+        Render()
+        RenderConnection = RunService.RenderStepped:Connect(Render)
+    end
+
+    local function Stop()
+        if RenderConnection then
+            RenderConnection:Disconnect()
+            RenderConnection = nil
+        end
+        if Pane then
+            Pane:Destroy()
+            Pane, Mesh = nil, nil
+        end
+        if Effect then
+            Effect:Destroy()
+            Effect = nil
+        end
+        for Child in Paused do
+            pcall(function()
+                Child.Enabled = true
+            end)
+        end
+        table.clear(Paused)
+    end
+
+    -- Runs when wanted, on a glass theme, while the menu is open (and not unloaded).
+    local function Sync()
+        local Should = Library.BlurEnabled
+            and not Library.Unloaded
+            and Library.Toggled
+            and Library.Window ~= nil
+            and Library.CurrentTheme.Glass ~= nil
+        if Should == Active then
+            return
+        end
+        Active = Should
+        if Should then
+            local Ok, Err = pcall(Start)
+            if not Ok then
+                warn("[Ui3] Glass blur failed: " .. tostring(Err))
+                Stop()
+            end
+        else
+            Stop()
+        end
+    end
+    Library.SyncBlur = Sync
+
+    Library:GiveSignal(RunService.Heartbeat:Connect(Sync))
+    Library:OnUnload(function()
+        Active = false
+        Stop()
+    end)
+end
+
+function Library:SetBlur(Value)
+    Library.BlurEnabled = Value == true
+    Library.SyncBlur()
+end
+
 local function Even(Number)
     Number = math.floor(Number + 0.5)
     return Number - Number % 2
@@ -7043,6 +7189,17 @@ function Library:CreateWindow(WindowInfo)
             end
         end,
     })
+
+    -- Only the area behind the window is blurred; see the Glass blur section above.
+    MenuBox:AddToggle("Ui3_Blur", {
+        Text = "Glass blur",
+        Default = WindowInfo.Blur == true,
+        Tooltip = "Blurs the game behind the window on glass themes like Liquid (depth of field, graphics quality 8+)",
+        Callback = function(Value)
+            Library:SetBlur(Value)
+        end,
+    })
+    Library:SetBlur(WindowInfo.Blur == true)
 
     MenuBox:AddDropdown("Ui3_Layout", {
         Text = "Layout",
