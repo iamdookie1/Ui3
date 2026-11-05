@@ -16,7 +16,8 @@ local Window = Library:CreateWindow({
 	Resizable = true,
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	-- DPIScale = 100, -- starting DPI in percent; players can change it in settings (saved in configs)
-	-- Theme = "Violet", -- starting theme: Monochrome, Violet, Ocean, Magenta, Emerald, Ember, Aurora
+	-- Theme = "Liquid", -- starting theme: Monochrome, Liquid, Violet, Ocean, Magenta, Emerald, Ember, Aurora
+	-- Blur = true, -- glass blur behind the window on glass themes (players can toggle it in settings)
 	-- Layout = "Modern", -- starting layout: Modern, Classic, Compact (players can switch in settings)
 	-- DPIScale = "Auto", -- default: picks the scale from the screen size
 })
