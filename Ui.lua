@@ -1463,13 +1463,17 @@ end
 
 -- Generic press-and-drag helper (mouse + touch). While a drag is live, Library.Dragging
 -- is set, every scrolling frame is frozen, and other elements ignore hover/click.
-local function TrackDrag(Handle, OnStart, OnMove, OnEnd)
+-- CanStart (optional) can refuse a drag, e.g. while something is locked.
+local function TrackDrag(Handle, OnStart, OnMove, OnEnd, CanStart)
     local Pressed = false
     local Moved = false
     local StartPosition
 
     Handle.InputBegan:Connect(function(Input)
         if not IsClick(Input) or Library.Dragging or Pressed then
+            return
+        end
+        if CanStart and not CanStart() then
             return
         end
 
@@ -7607,19 +7611,113 @@ function Library:CreateWindow(WindowInfo)
     ApplyLayout()
 
     --// Mobile open/close button \\--
+    -- A small lock sits next to it: unlocked, the button (lock included) can be dragged anywhere.
     if Library.IsMobile then
+        local ToggleHolder = New("Frame", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(12, 12),
+            Size = UDim2.fromOffset(76 + 6 + 26, 30),
+            Parent = ScreenGui,
+        })
+
         local MobileButton = New("TextButton", {
             BackgroundColor3 = "MainColor",
-            Position = UDim2.fromOffset(12, 12),
             Size = UDim2.fromOffset(76, 30),
             Text = "Toggle",
-            Parent = ScreenGui,
+            Parent = ToggleHolder,
         })
         Corner(MobileButton, 8)
         Stroke(MobileButton, "AccentColor")
-        MobileButton.MouseButton1Click:Connect(function()
-            Library:Toggle()
+
+        local LockButton = New("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            BackgroundColor3 = "MainColor",
+            Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.fromOffset(26, 26),
+            Parent = ToggleHolder,
+        })
+        Corner(LockButton, 7)
+        local LockStroke = Stroke(LockButton)
+
+        local LockIcon = New("ImageLabel", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            ImageColor3 = "FontColor",
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(14, 14),
+            Parent = LockButton,
+        })
+        local LockText = New("TextLabel", {
+            Size = UDim2.fromScale(1, 1),
+            Text = "",
+            TextSize = 11,
+            Visible = false,
+            Parent = LockButton,
+        })
+
+        local Locked = true
+        local function ShowLock()
+            local Icon = Library:GetIcon(if Locked then "lock" else "lock-open")
+            if Icon then
+                LockIcon.Visible = true
+                LockText.Visible = false
+                ApplyIcon(LockIcon, Icon)
+            else
+                LockIcon.Visible = false
+                LockText.Visible = true
+                LockText.Text = if Locked then "L" else "U"
+            end
+            LockIcon.ImageTransparency = if Locked then 0.35 else 0
+            -- Unlocked shows the accent outline so it's clear the button can move.
+            SetThemed(LockStroke, "Color", if Locked then "OutlineColor" else "AccentColor", Library.FastTweenInfo)
+        end
+        ShowLock()
+
+        LockButton.MouseButton1Click:Connect(function()
+            if Library:CanInteract() then
+                Locked = not Locked
+                ShowLock()
+            end
         end)
+
+        MobileButton.MouseButton1Click:Connect(function()
+            -- Releasing a drag isn't a tap.
+            if Library:CanInteract() then
+                Library:Toggle()
+            end
+        end)
+
+        -- Drag from either button while unlocked; the pair stays on screen.
+        local StartInput, StartPos
+        local function BeginDrag(Position)
+            StartInput = Position
+            StartPos = ToggleHolder.Position
+        end
+        local function MoveDrag(Position)
+            if not StartInput then
+                return
+            end
+            local Delta = Position - StartInput
+            local Screen = ScreenGui.AbsoluteSize
+            local Size = ToggleHolder.AbsoluteSize
+            Tween(ToggleHolder, Library.DragTweenInfo, {
+                Position = UDim2.fromOffset(
+                    math.clamp(math.floor(StartPos.X.Offset + Delta.X), 0, math.max(0, Screen.X - Size.X)),
+                    math.clamp(math.floor(StartPos.Y.Offset + Delta.Y), 0, math.max(0, Screen.Y - Size.Y))
+                ),
+            })
+        end
+        local function Unlocked()
+            return not Locked
+        end
+        TrackDrag(MobileButton, BeginDrag, MoveDrag, nil, Unlocked)
+        TrackDrag(LockButton, BeginDrag, MoveDrag, nil, Unlocked)
+
+        Window.ToggleButton = MobileButton
+        Window.ToggleLock = LockButton
+        function Window:SetToggleLocked(Value)
+            Locked = Value ~= false
+            ShowLock()
+        end
     end
 
     if WindowInfo.AutoShow then

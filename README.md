@@ -501,6 +501,15 @@ Library:OnUnload(function() print("bye") end)
 Library:Unload()
 ```
 
+### Mobile toggle button
+
+On mobile a small **Toggle** button opens and closes the menu. Next to it is a lock: tap it to unlock, then drag the button (or the lock) anywhere on screen. They move together and stay on screen. Tap the lock again to lock it in place. While it's locked, taps always open and close the menu.
+
+```lua
+Window:SetToggleLocked(false) -- unlock from code
+print(Window.ToggleButton, Window.ToggleLock) -- nil on desktop
+```
+
 ### Glass blur
 
 On glass themes like Liquid, players can turn on **Glass blur** in settings (saved in configs) to blur the game behind the window. Roblox can't blur behind UI directly, so it uses the depth of field trick: a nearly invisible glass pane sits right in front of the camera, sized to the window's rectangle on screen, and a `DepthOfFieldEffect` blurs what's seen through it. Only the area behind the window is blurred, and the pane follows the window as it moves, resizes, minimizes or scales.
