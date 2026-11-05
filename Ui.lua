@@ -84,6 +84,7 @@ local Library = {
         Element = 0.12,
     },
     TransparencyRegistry = {},
+    RoleCleanup = {},
 
     -- DPI scaling (like Obsidian): every top level piece of UI has a UIScale in Library.Scales.
     DPIScale = 1,
@@ -107,6 +108,12 @@ local Library = {
         RedColor = Color3.fromRGB(255, 101, 104),
         DarkColor = Color3.fromRGB(0, 0, 0),
         WhiteColor = Color3.fromRGB(255, 255, 255),
+
+        -- Surface tints. Normally the same as Main / Secondary / Outline; glass themes make
+        -- groupboxes and elements a light frost and give borders a white rim.
+        GroupboxColor = Color3.fromRGB(14, 14, 14),
+        ElementColor = Color3.fromRGB(19, 19, 19),
+        RimColor = Color3.fromRGB(28, 28, 28),
     },
 
     --// Syde-style easing: long, smooth, exponential \\--
@@ -215,6 +222,24 @@ local function Resolve(Value)
     return Library.Scheme[Value]
 end
 
+-- Groupboxes / elements (objects with a transparency role) and borders read their own tint
+-- keys, so glass themes can frost them without touching popups, rows and lines.
+local function ResolveFor(Object, Property, Value)
+    if typeof(Value) == "string" then
+        if Property == "BackgroundColor3" then
+            local Role = Library.TransparencyRegistry[Object]
+            if Role == "Groupbox" and Value == "MainColor" then
+                Value = "GroupboxColor"
+            elseif Role == "Element" and Value == "SecondaryColor" then
+                Value = "ElementColor"
+            end
+        elseif Property == "Color" and Value == "OutlineColor" and Object.ClassName == "UIStroke" then
+            Value = "RimColor"
+        end
+    end
+    return Resolve(Value)
+end
+
 local function IsThemed(Property, Value)
     return ThemeProps[Property]
         and (typeof(Value) == "function" or (typeof(Value) == "string" and Library.Scheme[Value] ~= nil))
@@ -232,9 +257,11 @@ end
 
 -- Objects tagged with a role take their BackgroundTransparency from Library.Transparency.
 local function SetTransparencyRole(Object, Role)
-    if Library.TransparencyRegistry[Object] == nil then
+    if not Library.RoleCleanup[Object] then
+        Library.RoleCleanup[Object] = true
         Object.Destroying:Connect(function()
             Library.TransparencyRegistry[Object] = nil
+            Library.RoleCleanup[Object] = nil
         end)
     end
     Library.TransparencyRegistry[Object] = Role
@@ -256,11 +283,15 @@ local function New(ClassName, Properties)
     Merged.Parent = nil
     local TransparencyRole = Merged.TransparencyRole
     Merged.TransparencyRole = nil
+    if TransparencyRole then
+        -- Known before colors resolve, so the role's tint applies.
+        Library.TransparencyRegistry[Object] = TransparencyRole
+    end
 
     for Key, Value in Merged do
         if IsThemed(Key, Value) then
             Register(Object, Key, Value)
-            Object[Key] = Resolve(Value)
+            Object[Key] = ResolveFor(Object, Key, Value)
         else
             Object[Key] = Value
         end
@@ -282,9 +313,9 @@ local function SetThemed(Object, Property, Value, Info)
     Register(Object, Property, Value)
 
     if Info == false then
-        Object[Property] = Resolve(Value)
+        Object[Property] = ResolveFor(Object, Property, Value)
     else
-        TweenService:Create(Object, Info or Library.TweenInfo, { [Property] = Resolve(Value) }):Play()
+        TweenService:Create(Object, Info or Library.TweenInfo, { [Property] = ResolveFor(Object, Property, Value) }):Play()
     end
 end
 
@@ -301,13 +332,17 @@ local function Corner(Parent, Radius)
     })
 end
 
+local GlassRim -- defined with the glass gradients below
+
 local function Stroke(Parent, ColorKey, Transparency)
-    return New("UIStroke", {
+    local Object = New("UIStroke", {
         ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
         Color = ColorKey or "OutlineColor",
         Transparency = Transparency or 0,
         Parent = Parent,
     })
+    GlassRim(Object)
+    return Object
 end
 
 local function Padding(Parent, Top, Bottom, Left, Right)
@@ -361,6 +396,27 @@ local function GlassGradient(Parent)
         Rotation = 90,
         Transparency = GlassFade,
         Parent = Parent,
+    })
+    table.insert(Library.GlassGradients, Gradient)
+    return Gradient
+end
+
+-- Glass themes: borders catch the light at the top left, fade along the sides and pick up a
+-- softer reflection at the bottom right, like the rim of a pane of glass.
+local RimFade = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(0.22, 0.45),
+    NumberSequenceKeypoint.new(0.5, 0.86),
+    NumberSequenceKeypoint.new(0.78, 0.6),
+    NumberSequenceKeypoint.new(1, 0.3),
+})
+
+GlassRim = function(StrokeObject)
+    local Gradient = New("UIGradient", {
+        Enabled = Library.CurrentTheme ~= nil and Library.CurrentTheme.Glass ~= nil,
+        Rotation = 45,
+        Transparency = RimFade,
+        Parent = StrokeObject,
     })
     table.insert(Library.GlassGradients, Gradient)
     return Gradient
@@ -424,7 +480,7 @@ end
 function Library:UpdateColorsUsingRegistry()
     for Object, Properties in Library.Registry do
         for Property, Value in Properties do
-            Object[Property] = Resolve(Value)
+            Object[Property] = ResolveFor(Object, Property, Value)
         end
     end
 
@@ -485,21 +541,26 @@ Library.Themes = {
         Name = "Liquid",
         -- Frosted glass: see-through grey surfaces with light rims, a slow silver liquid sheen
         -- and a band of light that glides across the window now and then.
+        -- Smoky glass for the window and anything that must stay readable (popups, rows),
+        -- white frost for groupboxes / elements, white rims lit from the top left.
         Scheme = {
-            BackgroundColor = Color3.fromRGB(30, 32, 37),
-            ContainerColor = Color3.fromRGB(50, 53, 60),
-            MainColor = Color3.fromRGB(76, 80, 88),
-            SecondaryColor = Color3.fromRGB(102, 106, 115),
-            OutlineColor = Color3.fromRGB(148, 152, 160),
-            AccentColor = Color3.fromRGB(238, 241, 246),
+            BackgroundColor = Color3.fromRGB(16, 18, 24),
+            ContainerColor = Color3.fromRGB(24, 27, 34),
+            MainColor = Color3.fromRGB(34, 37, 45),
+            SecondaryColor = Color3.fromRGB(54, 58, 68),
+            OutlineColor = Color3.fromRGB(66, 71, 82),
+            AccentColor = Color3.fromRGB(246, 248, 252),
             ShadowColor = Color3.fromRGB(0, 0, 0),
+            GroupboxColor = Color3.fromRGB(255, 255, 255),
+            ElementColor = Color3.fromRGB(255, 255, 255),
+            RimColor = Color3.fromRGB(255, 255, 255),
         },
         Colors = { Hex("#3a3f48"), Hex("#9aa3b2"), Hex("#f4f7fb"), Hex("#1b1d22") },
         Glow = Color3.fromRGB(215, 220, 230),
         Stars = false,
         -- Background transparency while this theme is on (0 solid, 1 invisible); Nebula is how
         -- faint the liquid sheen is on the window, Glare the seconds between light sweeps.
-        Glass = { Window = 0.3, Container = 0.5, Groupbox = 0.45, Element = 0.5, Button = 0.35, Nebula = 0.8, Glare = 7 },
+        Glass = { Window = 0.42, Container = 0.6, Groupbox = 0.92, Element = 0.88, Button = 0.45, Nebula = 0.75, Glare = 7 },
         Duration = 18, Delay = -6, Twinkle = 4, TwinkleDelay = 0,
     },
     {
@@ -562,21 +623,26 @@ end
 
 -- Turns a theme's four nebula colors into a full UI scheme.
 local function ThemeScheme(Theme)
+    local Scheme
     if Theme.Scheme then
-        return Theme.Scheme
+        Scheme = table.clone(Theme.Scheme)
+    else
+        local Black = Color3.new(0, 0, 0)
+        local C1, C2, C3, C4 = Theme.Colors[1], Theme.Colors[2], Theme.Colors[3], Theme.Colors[4]
+        Scheme = {
+            BackgroundColor = C4:Lerp(Black, 0.45),
+            ContainerColor = C4:Lerp(Black, 0.3),
+            MainColor = C4:Lerp(Black, 0.12):Lerp(C1, 0.08),
+            SecondaryColor = C4:Lerp(C1, 0.2),
+            OutlineColor = C4:Lerp(C2, 0.22),
+            AccentColor = Theme.Accent or C2:Lerp(C3, 0.35),
+            ShadowColor = Theme.Glow or C2,
+        }
     end
-
-    local Black = Color3.new(0, 0, 0)
-    local C1, C2, C3, C4 = Theme.Colors[1], Theme.Colors[2], Theme.Colors[3], Theme.Colors[4]
-    return {
-        BackgroundColor = C4:Lerp(Black, 0.45),
-        ContainerColor = C4:Lerp(Black, 0.3),
-        MainColor = C4:Lerp(Black, 0.12):Lerp(C1, 0.08),
-        SecondaryColor = C4:Lerp(C1, 0.2),
-        OutlineColor = C4:Lerp(C2, 0.22),
-        AccentColor = Theme.Accent or C2:Lerp(C3, 0.35),
-        ShadowColor = Theme.Glow or C2,
-    }
+    Scheme.GroupboxColor = Scheme.GroupboxColor or Scheme.MainColor
+    Scheme.ElementColor = Scheme.ElementColor or Scheme.SecondaryColor
+    Scheme.RimColor = Scheme.RimColor or Scheme.OutlineColor
+    return Scheme
 end
 
 -- Theme = { Name, Colors = { deep, vivid, light, background }, Glow?, Accent?, Duration?, Delay?, Twinkle?, TwinkleDelay? }
@@ -5045,6 +5111,7 @@ function Funcs:AddItemGrid(Idx, Info)
             BackgroundColor3 = "SecondaryColor",
             ClipsDescendants = true,
             LayoutOrder = Order,
+            TransparencyRole = "Element",
             Parent = GridFrame,
         })
         Corner(Frame, 12)
@@ -5876,9 +5943,11 @@ function Library:CreateWindow(WindowInfo)
         Rotation = 25,
         Transparency = NumberSequence.new({
             NumberSequenceKeypoint.new(0, 1),
-            NumberSequenceKeypoint.new(0.4, 1),
-            NumberSequenceKeypoint.new(0.5, 0.9),
-            NumberSequenceKeypoint.new(0.6, 1),
+            NumberSequenceKeypoint.new(0.36, 1),
+            NumberSequenceKeypoint.new(0.47, 0.88),
+            NumberSequenceKeypoint.new(0.5, 0.84),
+            NumberSequenceKeypoint.new(0.53, 0.88),
+            NumberSequenceKeypoint.new(0.64, 1),
             NumberSequenceKeypoint.new(1, 1),
         }),
         Parent = Glare,
