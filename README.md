@@ -1,6 +1,6 @@
 # Ui3
 
-A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and **animated themes**: black-and-white Monochrome plus six nebula themes with drifting clouds and twinkling stars.
+A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and **animated themes**: black-and-white Monochrome, a frosted-glass Liquid theme and six nebula themes with drifting clouds and twinkling stars.
 
 If you've used Obsidian (or Linoria), you already know how to use this. Most scripts carry over with few or no changes.
 
@@ -18,7 +18,7 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 - **Configs** that save, load and **autoload**, applied as each element is created, so they work even if your script creates elements late
 - **Auto scaling** from the screen size (bigger on 1440p / 4K, smaller on small screens, always fits), or a fixed 50% to 200%, saved in configs
 - While you drag a slider, color picker or the window, every other element ignores hovers and clicks
-- **7 animated themes**: Monochrome (black and white), Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
+- **8 animated themes**: Monochrome (black and white), Liquid (frosted glass), Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
 - A light sweeps across accent fills and another travels around the window border
 
 ## Quick start
@@ -511,6 +511,7 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 | Theme | Look |
 | --- | --- |
 | `Monochrome` | Default. Black and white: smoke-grey nebula, soft white highlights |
+| `Liquid` | Frosted glass: the window, groupboxes and elements turn see-through so the game shows behind them, lit from the top with light rims, a faint silver liquid sheen and a band of light that glides across the window every few seconds |
 | `Violet` | Deep purple nebula, lilac accent |
 | `Ocean` | Navy nebula, sky blue accent |
 | `Magenta` | Plum nebula, hot pink accent |
@@ -540,6 +541,8 @@ Library:AddTheme({
 	Duration = 15, -- seconds per drift
 })
 ```
+
+A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). `Stars = false` turns the stars off. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
 
 The accent always comes from the theme, so `Library:SetAccent` only prints a warning.
 
