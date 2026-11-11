@@ -1,6 +1,6 @@
 # Ui3
 
-A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and **animated themes**: black-and-white Monochrome, a frosted-glass Liquid theme and six nebula themes with drifting clouds and twinkling stars.
+A Roblox UI library that combines **Obsidian's layout and API** with **Syde's style**: a very dark theme, smooth exponential animations, and **animated themes**: black-and-white Monochrome, frosted-glass Liquid and blurred Glassy themes, and six nebula themes with drifting clouds and twinkling stars.
 
 If you've used Obsidian (or Linoria), you already know how to use this. Most scripts carry over with few or no changes.
 
@@ -18,7 +18,7 @@ If you've used Obsidian (or Linoria), you already know how to use this. Most scr
 - **Configs** that save, load and **autoload**, applied as each element is created, so they work even if your script creates elements late
 - **Auto scaling** from the screen size (bigger on 1440p / 4K, smaller on small screens, always fits), or a fixed 50% to 200%, saved in configs
 - While you drag a slider, color picker or the window, every other element ignores hovers and clicks
-- **8 animated themes**: Monochrome (black and white), Liquid (frosted glass), Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
+- **9 animated themes**: Monochrome (black and white), Liquid (frosted glass), Glassy (liquid glass with the game blurred behind it), Violet, Ocean, Magenta, Emerald, Ember and Aurora, picked from live preview cards in settings and saved in configs
 - A light sweeps across accent fills and another travels around the window border
 
 ## Quick start
@@ -148,6 +148,55 @@ local Big = Tab:AddBigGroupbox({ Name = "Overview", Description = "Optional", Ic
 ```
 
 Icons are [lucide](https://lucide.dev/) names, or a Roblox asset id for a custom image. Lucide icons are tinted with the accent.
+
+### Managing tabs, groupboxes and elements
+
+Everything can be renamed, hidden, locked or removed while the script runs.
+
+```lua
+-- Tabs
+local Shop = Window:AddTab({ Name = "Shop", Icon = "store", Locked = true, LockedReason = "Coming soon" })
+Shop:SetLocked(false)             -- locked tabs show a lock; clicking one says why
+Shop:SetLocked(true, "VIP only")
+Shop:SetVisible(false)            -- hide the tab button (Visible = false in AddTab works too)
+Shop:SetName("Store")             -- also SetTitle; updates Library.Tabs
+Shop:SetDescription("New text")
+Shop:SetIcon("shopping-cart")
+Shop:Select()                     -- same as Show; returns false if locked or hidden
+Shop:GetGroupbox("Items")
+Shop:Destroy()
+Window:GetTab("Main")
+Window:SelectTab("Main")          -- name or tab
+
+-- Hiding, locking or removing the open tab opens the first tab that can be opened.
+
+-- Sidebar sections
+local Section = Window:AddSection("Extras")
+Section:SetText("More")
+Section:SetVisible(false)
+Section:Destroy()
+
+-- Groupboxes
+local Box = Tab:AddGroupbox({ Name = "Aim", Collapsible = true, Collapsed = false, Locked = false })
+Box:SetName("Aimbot")             -- also SetTitle
+Box:SetDescription("Optional")
+Box:SetIcon("crosshair")          -- nil removes it
+Box:SetVisible(false)
+Box:SetCollapsed(true)            -- collapsible groupboxes fold from their header too
+Box:SetCollapsible(true)
+Box:SetLocked(true, "Turn on Aim first") -- a cover blocks clicks and shows the reason
+Box:Destroy()                     -- also removes its elements from Options / Toggles
+```
+
+Every element also has these, on top of its own methods:
+
+| Method | What it does |
+| --- | --- |
+| `SetVisible(Bool)` / `IsVisible()` | Show or hide it |
+| `SetLocked(Bool, Reason?)` / `IsLocked()` | Disable it (toggles, checkboxes, buttons, sliders, dropdowns, inputs); the reason shows on hover |
+| `SetTooltip(Text, DisabledText?)` | Add or change its hover text |
+| `GetValue()` | Its current value |
+| `Destroy()` | Remove it and its `Options` / `Toggles` entry |
 
 ## Elements
 
@@ -512,9 +561,10 @@ print(Window.ToggleButton, Window.ToggleLock) -- nil on desktop
 
 ### Glass blur
 
-On glass themes like Liquid, players can turn on **Glass blur** in settings (saved in configs) to blur the game behind the window. Roblox can't blur behind UI directly, so it uses the depth of field trick: a nearly invisible glass pane sits right in front of the camera, sized to the window's rectangle on screen, and a `DepthOfFieldEffect` blurs what's seen through it. Only the area behind the window is blurred, and the pane follows the window as it moves, resizes, minimizes or scales.
+**Glassy** always blurs. On Liquid, players can turn on **Glass blur** in settings (saved in configs) to blur the game behind the window. Roblox can't blur behind UI directly, so it uses the depth of field trick: a nearly invisible glass pane sits right in front of the camera, sized to the window's rectangle on screen, and a `DepthOfFieldEffect` blurs what's seen through it. Only the area behind the window is blurred, and the pane follows the window as it moves, resizes, minimizes or scales.
 
 - It only runs while the menu is open on a glass theme; hiding the menu or switching themes turns it off.
+- Glassy uses the strongest blur Roblox allows (depth of field near intensity 1, the maximum) and lets it reach closer to the window's edges.
 - While it runs, the game's own depth of field effects are paused, and they come back afterwards.
 - Glass renders at graphics quality 8 and up. On lower settings there's no blur, just the normal glass theme.
 
@@ -534,6 +584,7 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 | Theme | Look |
 | --- | --- |
 | `Monochrome` | Default. Black and white: smoke-grey nebula, soft white highlights |
+| `Glassy` | Liquid glass v2, always over a blurred game: much clearer panes in a cool blue-white frost, bright rims all the way round, a thin light along every top edge, a soft highlight in the window's top left and a quicker glare |
 | `Liquid` | Liquid glass: a smoky see-through window with the game behind it, groupboxes and elements as light frosted panes, white rims that catch the light at the top left and fade around the edges, a faint silver liquid sheen and a band of light that glides across the window every few seconds |
 | `Violet` | Deep purple nebula, lilac accent |
 | `Ocean` | Navy nebula, sky blue accent |
@@ -565,7 +616,7 @@ Library:AddTheme({
 })
 ```
 
-A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). `Stars = false` turns the stars off. A glass theme's `Scheme` can also set `GroupboxColor` and `ElementColor` (the frost tint of groupboxes and elements) and `RimColor` (borders, which get a top-left light in glass themes); other themes use Main / Secondary / Outline for these. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
+A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). Optional: `Rim = "Strong"` (brighter rims all round), `Shine = true` (light along top edges), `Highlight = true` (top-left glow), `AutoBlur = true` (always blur), `BlurIntensity` (0 to 1) and `BlurInset` (below 1 lets the blur reach closer to the edges). `Stars = false` turns the stars off. A glass theme's `Scheme` can also set `GroupboxColor` and `ElementColor` (the frost tint of groupboxes and elements) and `RimColor` (borders, which get a top-left light in glass themes); other themes use Main / Secondary / Outline for these. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
 
 The accent always comes from the theme, so `Library:SetAccent` only prints a warning.
 

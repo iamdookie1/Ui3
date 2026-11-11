@@ -411,15 +411,58 @@ local RimFade = NumberSequence.new({
     NumberSequenceKeypoint.new(1, 0.3),
 })
 
+-- Glass = { Rim = "Strong" }: brighter rims that stay visible all the way round.
+local RimFadeStrong = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0),
+    NumberSequenceKeypoint.new(0.25, 0.25),
+    NumberSequenceKeypoint.new(0.5, 0.62),
+    NumberSequenceKeypoint.new(0.75, 0.35),
+    NumberSequenceKeypoint.new(1, 0.1),
+})
+Library.GlassRims = {}
+
+local function RimSequence(Theme)
+    return if Theme and Theme.Glass and Theme.Glass.Rim == "Strong" then RimFadeStrong else RimFade
+end
+
 GlassRim = function(StrokeObject)
     local Gradient = New("UIGradient", {
         Enabled = Library.CurrentTheme ~= nil and Library.CurrentTheme.Glass ~= nil,
         Rotation = 45,
-        Transparency = RimFade,
+        Transparency = RimSequence(Library.CurrentTheme),
         Parent = StrokeObject,
     })
     table.insert(Library.GlassGradients, Gradient)
+    table.insert(Library.GlassRims, Gradient)
     return Gradient
+end
+
+-- Glass = { Shine = true }: a thin bright line just inside the top edge, where light catches
+-- the edge of the pane. It fades out towards the rounded corners.
+Library.GlassShines = {}
+local function GlassShine(Parent, Inset)
+    Inset = Inset or Library.CornerRadius
+    local Line = New("Frame", {
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0.2,
+        Position = UDim2.fromOffset(Inset, 1),
+        Size = UDim2.new(1, -Inset * 2, 0, 1),
+        Visible = Library.CurrentTheme ~= nil and Library.CurrentTheme.Glass ~= nil and Library.CurrentTheme.Glass.Shine == true,
+        ZIndex = 3,
+        Parent = Parent,
+    })
+    New("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.3, 0.35),
+            NumberSequenceKeypoint.new(0.5, 0.15),
+            NumberSequenceKeypoint.new(0.7, 0.35),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+        Parent = Line,
+    })
+    table.insert(Library.GlassShines, Line)
+    return Line
 end
 
 local function Sheen(Parent)
@@ -564,6 +607,35 @@ Library.Themes = {
         Duration = 18, Delay = -6, Twinkle = 4, TwinkleDelay = 0,
     },
     {
+        Name = "Glassy",
+        -- Liquid glass v2: always blurs the game behind the window, so the panes can be much
+        -- clearer. Cool blue-white frost, bright rims all the way round, a light line along
+        -- every top edge and a soft highlight in the window's top left corner.
+        Scheme = {
+            BackgroundColor = Color3.fromRGB(10, 14, 24),
+            ContainerColor = Color3.fromRGB(16, 21, 34),
+            MainColor = Color3.fromRGB(24, 30, 46),
+            SecondaryColor = Color3.fromRGB(42, 50, 70),
+            OutlineColor = Color3.fromRGB(70, 80, 104),
+            AccentColor = Color3.fromRGB(255, 255, 255),
+            ShadowColor = Color3.fromRGB(0, 0, 0),
+            GroupboxColor = Color3.fromRGB(228, 238, 255),
+            ElementColor = Color3.fromRGB(236, 243, 255),
+            RimColor = Color3.fromRGB(255, 255, 255),
+        },
+        Colors = { Hex("#2a3550"), Hex("#8fb4ff"), Hex("#ffffff"), Hex("#0c1220") },
+        Glow = Color3.fromRGB(170, 200, 255),
+        Stars = false,
+        -- AutoBlur: the glass blur is always on with this theme. BlurInset < 1 lets the blur
+        -- reach closer to the window's edges.
+        Glass = {
+            Window = 0.6, Container = 0.78, Groupbox = 0.88, Element = 0.82, Button = 0.55,
+            Nebula = 0.86, Glare = 5, Rim = "Strong", Shine = true, Highlight = true,
+            AutoBlur = true, BlurIntensity = 1, BlurInset = 0.45,
+        },
+        Duration = 20, Delay = -2, Twinkle = 4, TwinkleDelay = 0,
+    },
+    {
         Name = "Violet",
         Colors = { Hex("#3b0f8f"), Hex("#7a3cff"), Hex("#e0a8ff"), Hex("#12052e") },
         Glow = Color3.fromRGB(150, 90, 255),
@@ -706,16 +778,29 @@ function Library:SetTheme(Name, Instant)
             Tween(Object, Library.TweenInfo, { BackgroundTransparency = Target })
         end
     end
-    local Index = 1
-    while Index <= #Library.GlassGradients do
-        local Gradient = Library.GlassGradients[Index]
-        if Gradient.Parent == nil then
-            table.remove(Library.GlassGradients, Index)
-        else
-            Gradient.Enabled = Glass ~= nil
-            Index += 1
+    -- Drop destroyed pieces, update the rest.
+    local function EachAlive(List, Apply)
+        local Index = 1
+        while Index <= #List do
+            local Object = List[Index]
+            if Object.Parent == nil then
+                table.remove(List, Index)
+            else
+                Apply(Object)
+                Index += 1
+            end
         end
     end
+    local Rim = RimSequence(Theme)
+    EachAlive(Library.GlassGradients, function(Gradient)
+        Gradient.Enabled = Glass ~= nil
+    end)
+    EachAlive(Library.GlassRims, function(Gradient)
+        Gradient.Transparency = Rim
+    end)
+    EachAlive(Library.GlassShines, function(Line)
+        Line.Visible = Glass ~= nil and Glass.Shine == true
+    end)
 
     for _, Hook in Library.ThemeHooks do
         Library:SafeCallback(Hook, Theme, Instant)
@@ -5344,6 +5429,121 @@ function Funcs:AddItemGrid(Idx, Info)
     return Grid
 end
 
+--// Shared element API \\--
+-- Every element (and groupbox) falls back to these through its metatable, so they all get
+-- the same basics on top of their own methods.
+
+-- Drops elements whose frames live under Root from Options / Toggles (used by Destroy).
+local function ForgetElementsUnder(Root)
+    for _, Registry in { Options, Toggles } do
+        for Idx, Element in Registry do
+            local Holder = typeof(Element) == "table" and rawget(Element, "Holder")
+            if Holder and (Holder == Root or Holder:IsDescendantOf(Root)) then
+                Registry[Idx] = nil
+            end
+        end
+    end
+end
+
+function Funcs:SetVisible(Visible)
+    self.Visible = Visible ~= false
+    if self.Holder then
+        self.Holder.Visible = self.Visible
+    end
+end
+
+function Funcs:IsVisible()
+    if self.Holder then
+        return self.Holder.Visible
+    end
+    return self.Visible ~= false
+end
+
+function Funcs:GetValue()
+    return self.Value
+end
+
+-- Text shown on hover; DisabledText shows instead while it's disabled or locked.
+function Funcs:SetTooltip(Text, DisabledText)
+    if not self.TooltipTable then
+        if not self.Holder then
+            return
+        end
+        self.TooltipTable = Library:AddTooltip(nil, nil, self.Holder)
+        self.TooltipTable.Disabled = self.Disabled == true
+    end
+    self.TooltipTable.Text = Text
+    if DisabledText ~= nil then
+        self.TooltipTable.DisabledText = DisabledText
+    end
+end
+
+-- Locks an element that can be disabled (toggles, buttons, sliders, dropdowns, inputs), with
+-- an optional reason shown on hover.
+function Funcs:SetLocked(Locked, Reason)
+    self.Locked = Locked ~= false
+    if self.SetDisabled then
+        self:SetDisabled(self.Locked)
+    end
+    if Reason then
+        self:SetTooltip(self.TooltipTable and self.TooltipTable.Text or nil, "Locked: " .. tostring(Reason))
+    end
+    if self.TooltipTable then
+        self.TooltipTable.Disabled = self.Locked or self.Disabled == true
+    end
+end
+
+function Funcs:IsLocked()
+    return self.Locked == true
+end
+
+function Funcs:Destroy()
+    if self.Popup and self.Popup.Close then
+        self.Popup:Close()
+    end
+    for _, Registry in { Options, Toggles } do
+        for Idx, Element in Registry do
+            if Element == self then
+                Registry[Idx] = nil
+            end
+        end
+    end
+    if self.Holder then
+        ForgetElementsUnder(self.Holder)
+        self.Holder:Destroy()
+    end
+    self.Destroyed = true
+end
+
+-- Remember each element's root frame (the new child of the container it was added to), so
+-- the shared methods above know what to show, hide and destroy.
+for Name, Add in table.clone(Funcs) do
+    if Name:sub(1, 3) == "Add" and typeof(Add) == "function" then
+        Funcs[Name] = function(self, ...)
+            local Container = rawget(self, "Container")
+            local Before
+            if typeof(Container) == "Instance" then
+                Before = {}
+                for _, Child in Container:GetChildren() do
+                    Before[Child] = true
+                end
+            end
+
+            local Element = Add(self, ...)
+
+            if Before and typeof(Element) == "table" and rawget(Element, "Holder") == nil then
+                for _, Child in Container:GetChildren() do
+                    if not Before[Child] and Child:IsA("GuiObject") then
+                        Element.Holder = Child
+                        break
+                    end
+                end
+            end
+            return Element
+        end
+    end
+end
+
 --// Groupboxes \\--
 local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
     local Box = New("Frame", {
@@ -5357,36 +5557,40 @@ local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
     Corner(Box, Library.CornerRadius)
     Stroke(Box)
     GlassGradient(Box)
-    List(Box, 0)
+    GlassShine(Box)
 
-    local Header = New("Frame", {
+    -- The content stacks in Body; the lock cover sits over it, outside the list layout.
+    local Body = New("Frame", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 0),
+        Parent = Box,
+    })
+    List(Body, 0)
+
+    local Header = New("TextButton", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
         Size = UDim2.new(1, 0, 0, 36),
-        Parent = Box,
+        Parent = Body,
     })
     Padding(Header, 9, 9, 12, 12)
 
-    local BoxIcon = Library:GetIcon(Info.IconName or Info.Icon)
-    if BoxIcon then
-        local HeaderIcon = New("ImageLabel", {
-            ImageColor3 = BoxIcon.Custom and "WhiteColor" or "AccentColor",
-            Size = UDim2.fromOffset(18, 18),
-            Parent = Header,
-        })
-        ApplyIcon(HeaderIcon, BoxIcon)
-    end
+    local HeaderIcon = New("ImageLabel", {
+        Size = UDim2.fromOffset(18, 18),
+        Visible = false,
+        Parent = Header,
+    })
 
     local Texts = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(BoxIcon and 26 or 0, 0),
-        Size = UDim2.new(1, BoxIcon and -26 or 0, 0, 0),
+        Size = UDim2.fromScale(1, 0),
         Parent = Header,
     })
     List(Texts, 2)
 
-    New("TextLabel", {
+    local TitleLabel = New("TextLabel", {
         AutomaticSize = Enum.AutomaticSize.Y,
         FontFace = SemiBold,
         Size = UDim2.new(1, 0, 0, 18),
@@ -5397,43 +5601,181 @@ local function CreateGroupbox(Parent, Info, LayoutOrder, Tab, IsBig)
         Parent = Texts,
     })
 
-    if Info.Description then
-        New("TextLabel", {
-            AutomaticSize = Enum.AutomaticSize.Y,
-            LayoutOrder = 1,
-            Size = UDim2.fromScale(1, 0),
-            Text = Info.Description,
-            TextSize = 13,
-            TextTransparency = 0.5,
-            TextWrapped = true,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            Parent = Texts,
-        })
+    local DescriptionLabel = New("TextLabel", {
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 1,
+        Size = UDim2.fromScale(1, 0),
+        Text = Info.Description or "",
+        TextSize = 13,
+        TextTransparency = 0.5,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Visible = Info.Description ~= nil and Info.Description ~= "",
+        Parent = Texts,
+    })
+
+    -- Collapsible groupboxes get a chevron; clicking the header folds them.
+    local Chevron = New("ImageLabel", {
+        AnchorPoint = Vector2.new(1, 0),
+        ImageColor3 = "FontColor",
+        ImageTransparency = 0.5,
+        Position = UDim2.new(1, 0, 0, 1),
+        Size = UDim2.fromOffset(16, 16),
+        Visible = false,
+        Parent = Header,
+    })
+    local ChevronIcon = Library:GetIcon("chevron-down")
+    if ChevronIcon then
+        ApplyIcon(Chevron, ChevronIcon)
     end
 
-    MakeLine({ LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 1), Parent = Box })
+    local HeaderLine = MakeLine({ LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 1), Parent = Body })
 
     local BoxContainer = New("Frame", {
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
         LayoutOrder = 2,
         Size = UDim2.fromScale(1, 0),
-        Parent = Box,
+        Parent = Body,
     })
     List(BoxContainer, 9)
     Padding(BoxContainer, 10, 12, 12, 12)
 
+    -- Lock cover: blocks every click on the groupbox and says why.
+    local LockCover = New("TextButton", {
+        BackgroundColor3 = "DarkColor",
+        BackgroundTransparency = 0.45,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+        ZIndex = 20,
+        Parent = Box,
+    })
+    Corner(LockCover, Library.CornerRadius)
+    local LockStack = New("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.5, 0.5),
+        ZIndex = 21,
+        Parent = LockCover,
+    })
+    local LockList = List(LockStack, 6)
+    LockList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    local LockIconData = Library:GetIcon("lock")
+    if LockIconData then
+        local LockImage = New("ImageLabel", {
+            ImageColor3 = "FontColor",
+            Size = UDim2.fromOffset(20, 20),
+            ZIndex = 21,
+            Parent = LockStack,
+        })
+        ApplyIcon(LockImage, LockIconData)
+    end
+    local LockLabel = New("TextLabel", {
+        AutomaticSize = Enum.AutomaticSize.XY,
+        LayoutOrder = 1,
+        Text = "Locked",
+        TextSize = 13,
+        TextTransparency = 0.15,
+        ZIndex = 21,
+        Parent = LockStack,
+    })
+
     local Groupbox = {
         Name = Info.Name,
+        Description = Info.Description,
         Holder = Box,
         Container = BoxContainer,
         Tab = Tab,
         IsBig = IsBig == true,
+        Collapsed = false,
+        Collapsible = Info.Collapsible == true,
+        Icon = Info.IconName or Info.Icon,
+        Locked = false,
         Type = "Groupbox",
     }
 
+    function Groupbox:SetIcon(Icon)
+        Groupbox.Icon = Icon
+        local Data = Library:GetIcon(Icon)
+        HeaderIcon.Visible = Data ~= nil
+        if Data then
+            SetThemed(HeaderIcon, "ImageColor3", Data.Custom and "WhiteColor" or "AccentColor", false)
+            ApplyIcon(HeaderIcon, Data)
+        end
+        local Right = if Groupbox.Collapsible then 22 else 0
+        Texts.Position = UDim2.fromOffset(Data and 26 or 0, 0)
+        Texts.Size = UDim2.new(1, (Data and -26 or 0) - Right, 0, 0)
+    end
+
+    function Groupbox:SetName(Name)
+        Groupbox.Name = Name
+        TitleLabel.Text = tostring(Name or "")
+    end
+    Groupbox.SetTitle = Groupbox.SetName
+    Groupbox.SetText = Groupbox.SetName
+
+    function Groupbox:SetDescription(Text)
+        Groupbox.Description = Text
+        DescriptionLabel.Text = tostring(Text or "")
+        DescriptionLabel.Visible = Text ~= nil and Text ~= ""
+    end
+
     function Groupbox:SetVisible(Visible)
-        Box.Visible = Visible
+        Groupbox.Visible = Visible ~= false
+        Box.Visible = Groupbox.Visible
+    end
+
+    function Groupbox:SetCollapsed(Collapsed)
+        Groupbox.Collapsed = Collapsed == true
+        BoxContainer.Visible = not Groupbox.Collapsed
+        HeaderLine.Visible = not Groupbox.Collapsed
+        Tween(Chevron, Library.TweenInfo, { Rotation = Groupbox.Collapsed and -90 or 0 })
+    end
+
+    function Groupbox:SetCollapsible(Collapsible)
+        Groupbox.Collapsible = Collapsible == true
+        Chevron.Visible = Groupbox.Collapsible and ChevronIcon ~= nil
+        if not Groupbox.Collapsible and Groupbox.Collapsed then
+            Groupbox:SetCollapsed(false)
+        end
+        Groupbox:SetIcon(Groupbox.Icon)
+    end
+
+    -- Locked groupboxes show a cover with an optional reason and ignore clicks.
+    function Groupbox:SetLocked(Locked, Reason)
+        Groupbox.Locked = Locked ~= false
+        LockLabel.Text = if Reason then "Locked: " .. tostring(Reason) else "Locked"
+        LockCover.Visible = Groupbox.Locked
+        if Groupbox.Locked then
+            CloseOpenedPopup()
+        end
+    end
+
+    function Groupbox:Destroy()
+        if Tab then
+            local Index = table.find(Tab.Groupboxes, Groupbox)
+            if Index then
+                table.remove(Tab.Groupboxes, Index)
+            end
+        end
+        ForgetElementsUnder(Box)
+        Box:Destroy()
+        Groupbox.Destroyed = true
+    end
+
+    Header.MouseButton1Click:Connect(function()
+        if Groupbox.Collapsible and Library:CanInteract() then
+            Groupbox:SetCollapsed(not Groupbox.Collapsed)
+        end
+    end)
+
+    Groupbox:SetCollapsible(Groupbox.Collapsible)
+    if Info.Collapsed then
+        Groupbox:SetCollapsed(true)
+    end
+    if Info.Locked then
+        Groupbox:SetLocked(true, Info.LockedReason)
     end
 
     setmetatable(Groupbox, { __index = Funcs })
@@ -5823,7 +6165,11 @@ do
 
         -- Pull the edges in a little: the blur bleeds outwards and the window has round corners.
         local Main = Window.Main
-        local Inset = 8 + Camera.ViewportSize.Y / 2560 * 48
+        local Glass = Library.CurrentTheme.Glass
+        if Effect then
+            Effect.NearIntensity = (Glass and Glass.BlurIntensity) or 1
+        end
+        local Inset = (8 + Camera.ViewportSize.Y / 2560 * 48) * ((Glass and Glass.BlurInset) or 1)
         local Size = Main.AbsoluteSize - Vector2.new(Inset, Inset)
         if Size.X <= 0 or Size.Y <= 0 then
             Mesh.Scale = Vector3.new(0, 0, 0)
@@ -5905,7 +6251,8 @@ do
 
     -- Runs when wanted, on a glass theme, while the menu is open (and not unloaded).
     local function Sync()
-        local Should = Library.BlurEnabled
+        local Glass = Library.CurrentTheme.Glass
+        local Should = (Library.BlurEnabled or (Glass ~= nil and Glass.AutoBlur == true))
             and not Library.Unloaded
             and Library.Toggled
             and Library.Window ~= nil
@@ -6078,6 +6425,27 @@ function Library:CreateWindow(WindowInfo)
     })
     local NebulaLayer = WindowNebula.Canvas
     GlassGradient(Main)
+    GlassShine(Main, 18)
+
+    -- Glass = { Highlight = true }: a soft light in the top left, like a window catching a
+    -- lamp. Same separable Gaussian as the nebula clouds, so it has no edges.
+    local Highlight = New("CanvasGroup", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        GroupTransparency = 0.88,
+        Position = UDim2.fromScale(0.22, 0.04),
+        Size = UDim2.fromScale(0.85, 0.6),
+        Visible = false,
+        ZIndex = 0,
+        Parent = Main,
+    })
+    New("UIGradient", { Transparency = CloudFade, Parent = Highlight })
+    local HighlightFill = New("Frame", {
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        Size = UDim2.fromScale(1, 1),
+        Parent = Highlight,
+    })
+    New("UIGradient", { Rotation = 90, Transparency = CloudFade, Parent = HighlightFill })
 
     -- Glass themes: a soft band of light glides across the window now and then.
     local Glare = New("Frame", {
@@ -6426,6 +6794,7 @@ function Library:CreateWindow(WindowInfo)
         local ShadowTarget = if Glass then 0.55 elseif HasNebula then 0.45 else 0.25
         Glare.Visible = Glass ~= nil
         GlareGradient.Offset = Vector2.new(-1, 0)
+        Highlight.Visible = Glass ~= nil and Glass.Highlight == true
 
         if Instant then
             Container.BackgroundTransparency = ContainerTarget
@@ -6591,11 +6960,25 @@ function Library:CreateWindow(WindowInfo)
         local Section = { Label = Label }
 
         function Section:ApplyLayout()
-            Label.Visible = Layout.TabMode == "List"
+            Label.Visible = Layout.TabMode == "List" and Section.Visible ~= false
         end
 
         function Section:SetText(NewText)
             Label.Text = NewText
+        end
+        Section.SetName = Section.SetText
+
+        function Section:SetVisible(Visible)
+            Section.Visible = Visible ~= false
+            Section:ApplyLayout()
+        end
+
+        function Section:Destroy()
+            local Index = table.find(Window.Sections, Section)
+            if Index then
+                table.remove(Window.Sections, Index)
+            end
+            Label:Destroy()
         end
 
         Section:ApplyLayout()
@@ -6606,8 +6989,9 @@ function Library:CreateWindow(WindowInfo)
     --// Tabs \\--
     function Window:AddTab(...)
         local Name, Icon, Description
+        local Data = {}
         if select("#", ...) == 1 and typeof((...)) == "table" then
-            local Data = ...
+            Data = ...
             Name, Icon, Description = Data.Name or "Tab", Data.Icon, Data.Description
         else
             Name, Icon, Description = ...
@@ -6618,6 +7002,8 @@ function Library:CreateWindow(WindowInfo)
             Description = Description,
             Groupboxes = {},
             Window = Window,
+            Locked = false,
+            Visible = true,
         }
 
         local TabButton = New("TextButton", {
@@ -6658,18 +7044,37 @@ function Library:CreateWindow(WindowInfo)
         Corner(Indicator, UDim.new(1, 0))
 
         local TabIcon
-        local IconData = Library:GetIcon(Icon)
-        if IconData then
+        local function MakeTabIcon(IconData)
             TabIcon = New("ImageLabel", {
                 AnchorPoint = Vector2.new(0, 0.5),
                 ImageColor3 = IconData.Custom and "WhiteColor" or "AccentColor",
-                ImageTransparency = 0.5,
+                ImageTransparency = if Library.ActiveTab == Tab then 0 else 0.5,
                 Position = UDim2.new(0, 12, 0.5, 0),
                 Size = UDim2.fromOffset(18, 18),
                 ZIndex = 2,
                 Parent = TabButton,
             })
             ApplyIcon(TabIcon, IconData)
+        end
+        local IconData = Library:GetIcon(Icon)
+        if IconData then
+            MakeTabIcon(IconData)
+        end
+
+        -- Small lock on the right of locked tabs.
+        local LockMark = New("ImageLabel", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.45,
+            Position = UDim2.new(1, -10, 0.5, 0),
+            Size = UDim2.fromOffset(14, 14),
+            Visible = false,
+            ZIndex = 3,
+            Parent = TabButton,
+        })
+        local LockMarkIcon = Library:GetIcon("lock")
+        if LockMarkIcon then
+            ApplyIcon(LockMark, LockMarkIcon)
         end
 
         local TabLabel = New("TextLabel", {
@@ -6760,13 +7165,14 @@ function Library:CreateWindow(WindowInfo)
             TabSkin:SetWanted(Selected)
             Tween(TabButton, TweenData, { BackgroundTransparency = Selected and Library.Transparency.Element or 1 })
             Tween(ButtonStroke, TweenData, { Transparency = Selected and 0 or 1 })
-            Tween(TabLabel, TweenData, { TextTransparency = Selected and 0 or 0.5 })
+            local Dim = if Tab.Locked then 0.75 else 0.5
+            Tween(TabLabel, TweenData, { TextTransparency = Selected and 0 or Dim })
             Tween(Indicator, TweenData, {
                 BackgroundTransparency = Selected and 0 or 1,
                 Size = UDim2.fromOffset(3, Selected and 18 or 0),
             })
             if TabIcon then
-                Tween(TabIcon, TweenData, { ImageTransparency = Selected and 0 or 0.5 })
+                Tween(TabIcon, TweenData, { ImageTransparency = Selected and 0 or Dim })
             end
         end
 
@@ -6775,7 +7181,23 @@ function Library:CreateWindow(WindowInfo)
             local Mode = Layout.TabMode
 
             TabButton.Size = UDim2.new(1, 0, 0, Layout.TabHeight)
-            TabTooltip.Text = if Mode == "Icons" then Name else nil
+            local TipText = if Mode == "Icons" then Name else nil
+            if Tab.Locked then
+                TipText = (if TipText then TipText .. " - " else "") .. "Locked" .. (if Tab.LockedReason then ": " .. Tab.LockedReason else "")
+            end
+            TabTooltip.Text = TipText
+
+            -- The lock sits on the right in the list, in the corner on the icon rail.
+            if Mode == "Icons" then
+                LockMark.AnchorPoint = Vector2.new(1, 0)
+                LockMark.Position = UDim2.new(1, -3, 0, 3)
+                LockMark.Size = UDim2.fromOffset(11, 11)
+            else
+                LockMark.AnchorPoint = Vector2.new(1, 0.5)
+                LockMark.Position = UDim2.new(1, -10, 0.5, 0)
+                LockMark.Size = UDim2.fromOffset(14, 14)
+            end
+            LockMark.Visible = Tab.Locked and LockMarkIcon ~= nil
 
             if Mode == "Icons" then
                 if TabIcon then
@@ -6800,7 +7222,7 @@ function Library:CreateWindow(WindowInfo)
                 TabLabel.TextXAlignment = Enum.TextXAlignment.Left
                 TabLabel.Position = UDim2.fromOffset(TextX, 0)
                 TabLabel.AutomaticSize = Enum.AutomaticSize.None
-                TabLabel.Size = UDim2.new(1, -TextX - 8, 1, 0)
+                TabLabel.Size = UDim2.new(1, -TextX - (if Tab.Locked then 30 else 8), 1, 0)
             end
             TabLabel.TextSize = if Layout.TabHeight >= 40 then 15 else 14
 
@@ -6812,9 +7234,13 @@ function Library:CreateWindow(WindowInfo)
             Relayout()
         end
 
-        function Tab:Show()
+        -- Locked or hidden tabs can't be opened (Force skips that check).
+        function Tab:Show(Force)
             if Library.ActiveTab == Tab then
-                return
+                return true
+            end
+            if not Force and (Tab.Locked or not Tab.Visible) then
+                return false
             end
             CloseOpenedPopup()
 
@@ -6836,21 +7262,148 @@ function Library:CreateWindow(WindowInfo)
             Page.Visible = true
             Page.Position = UDim2.fromOffset(0, 14)
             Tween(Page, Library.TweenInfo, { Position = UDim2.fromOffset(0, 0) })
+            return true
+        end
+        Tab.Select = Tab.Show
+
+        -- When the open tab gets hidden, locked or removed, open the first tab that can be.
+        local function LeaveIfActive()
+            if Library.ActiveTab ~= Tab then
+                return
+            end
+            for _, Other in Window.Tabs do
+                if Other ~= Tab and Other.Visible and not Other.Locked then
+                    Other:Show()
+                    return
+                end
+            end
+        end
+
+        function Tab:SetName(NewName)
+            NewName = tostring(NewName)
+            if Library.Tabs[Name] == Tab then
+                Library.Tabs[Name] = nil
+            end
+            Name = NewName
+            Tab.Name = NewName
+            Library.Tabs[NewName] = Tab
+            if Library.ActiveTab == Tab then
+                TabInfoTitle.Text = NewName
+            end
+            Tab:ApplyLayout()
+        end
+        Tab.SetTitle = Tab.SetName
+        Tab.SetText = Tab.SetName
+
+        function Tab:SetDescription(Text)
+            Description = Text
+            Tab.Description = Text
+            if Library.ActiveTab == Tab then
+                TabInfoDescription.Text = Text or ""
+                TabInfoDescription.Visible = Text ~= nil and Text ~= ""
+            end
+        end
+
+        function Tab:SetIcon(NewIcon)
+            local Data = Library:GetIcon(NewIcon)
+            if not Data then
+                if TabIcon then
+                    TabIcon:Destroy()
+                    TabIcon = nil
+                end
+            elseif TabIcon then
+                SetThemed(TabIcon, "ImageColor3", Data.Custom and "WhiteColor" or "AccentColor", false)
+                ApplyIcon(TabIcon, Data)
+            else
+                MakeTabIcon(Data)
+            end
+            Tab:ApplyLayout()
+        end
+
+        function Tab:SetVisible(Visible)
+            Tab.Visible = Visible ~= false
+            TabButton.Visible = Tab.Visible
+            if not Tab.Visible then
+                LeaveIfActive()
+            end
+        end
+
+        function Tab:IsVisible()
+            return Tab.Visible
+        end
+
+        -- Locked tabs stay in the list with a lock; clicking one says why it's locked.
+        function Tab:SetLocked(Locked, Reason)
+            Tab.Locked = Locked ~= false
+            Tab.LockedReason = if Tab.Locked then Reason else nil
+            Tween(TabLabel, Library.FastTweenInfo, {
+                TextTransparency = if Library.ActiveTab == Tab then 0 elseif Tab.Locked then 0.75 else 0.5,
+            })
+            if TabIcon then
+                Tween(TabIcon, Library.FastTweenInfo, {
+                    ImageTransparency = if Library.ActiveTab == Tab then 0 elseif Tab.Locked then 0.75 else 0.5,
+                })
+            end
+            Tab:ApplyLayout()
+            if Tab.Locked then
+                LeaveIfActive()
+            end
+        end
+
+        function Tab:IsLocked()
+            return Tab.Locked
+        end
+
+        function Tab:GetGroupbox(GroupboxName)
+            for _, Groupbox in Tab.Groupboxes do
+                if Groupbox.Name == GroupboxName then
+                    return Groupbox
+                end
+            end
+            return nil
+        end
+
+        function Tab:Destroy()
+            LeaveIfActive()
+            if Library.ActiveTab == Tab then
+                Library.ActiveTab = nil
+            end
+            local Index = table.find(Window.Tabs, Tab)
+            if Index then
+                table.remove(Window.Tabs, Index)
+            end
+            if Library.Tabs[Name] == Tab then
+                Library.Tabs[Name] = nil
+            end
+            ForgetElementsUnder(Page)
+            Page:Destroy()
+            TabButton:Destroy()
+            Tab.Destroyed = true
         end
 
         OnHover(TabButton, function()
-            if Library.ActiveTab ~= Tab then
+            if Library.ActiveTab ~= Tab and not Tab.Locked then
                 Tween(TabLabel, Library.FastTweenInfo, { TextTransparency = 0.25 })
             end
         end, function()
-            if Library.ActiveTab ~= Tab then
+            if Library.ActiveTab ~= Tab and not Tab.Locked then
                 Tween(TabLabel, Library.FastTweenInfo, { TextTransparency = 0.5 })
             end
         end)
         TabButton.MouseButton1Click:Connect(function()
-            if Library:CanInteract() then
-                Tab:Show()
+            if not Library:CanInteract() then
+                return
             end
+            if Tab.Locked then
+                Library:Notify({
+                    Title = Name .. " is locked",
+                    Description = Tab.LockedReason or "This tab can't be opened right now.",
+                    Icon = "lock",
+                    Time = 3,
+                })
+                return
+            end
+            Tab:Show()
         end)
 
         --// Groupboxes \\--
@@ -6899,11 +7452,33 @@ function Library:CreateWindow(WindowInfo)
         Library.Tabs[Name] = Tab
         Tab:ApplyLayout()
 
-        if #Window.Tabs == 1 then
+        if Data.Locked then
+            Tab:SetLocked(true, Data.LockedReason)
+        end
+        if Data.Visible == false then
+            Tab:SetVisible(false)
+        end
+        if Library.ActiveTab == nil and Tab.Visible and not Tab.Locked then
             Tab:Show()
         end
 
         return Tab
+    end
+
+    function Window:GetTab(TabName)
+        for _, Tab in Window.Tabs do
+            if Tab.Name == TabName then
+                return Tab
+            end
+        end
+        return nil
+    end
+
+    function Window:SelectTab(Tab)
+        if typeof(Tab) ~= "table" then
+            Tab = Window:GetTab(Tab)
+        end
+        return Tab ~= nil and Tab:Show() == true
     end
 
     --// Settings panel (gear, top right) \\--
@@ -7198,7 +7773,7 @@ function Library:CreateWindow(WindowInfo)
     MenuBox:AddToggle("Ui3_Blur", {
         Text = "Glass blur",
         Default = WindowInfo.Blur == true,
-        Tooltip = "Blurs the game behind the window on glass themes like Liquid (depth of field, graphics quality 8+)",
+        Tooltip = "Blurs the game behind the window on Liquid (Glassy always blurs). Depth of field, graphics quality 8+",
         Callback = function(Value)
             Library:SetBlur(Value)
         end,

@@ -16,7 +16,7 @@ local Window = Library:CreateWindow({
 	Resizable = true,
 	ToggleKeybind = Enum.KeyCode.RightControl,
 	-- DPIScale = 100, -- starting DPI in percent; players can change it in settings (saved in configs)
-	-- Theme = "Liquid", -- starting theme: Monochrome, Liquid, Violet, Ocean, Magenta, Emerald, Ember, Aurora
+	-- Theme = "Glassy", -- starting theme: Monochrome, Liquid, Glassy, Violet, Ocean, Magenta, Emerald, Ember, Aurora
 	-- Blur = true, -- glass blur behind the window on glass themes (players can toggle it in settings)
 	-- Layout = "Modern", -- starting layout: Modern, Classic, Compact (players can switch in settings)
 	-- DPIScale = "Auto", -- default: picks the scale from the screen size
@@ -32,6 +32,15 @@ Tabs.Dashboard = Window:AddTab("Dashboard", "layout-dashboard", "Big groupboxes"
 Window:AddSection("Showcase")
 Tabs.Items = Window:AddTab("Items", "gem", "Search, filters, chips and item cards")
 Tabs.Visuals = Window:AddTab("Visuals", "eye", "Color pickers on labels")
+Tabs.Manage = Window:AddTab("Manage", "settings-2", "Lock, hide, rename and remove things")
+-- Tabs can start locked (or hidden with Visible = false); clicking a locked tab says why.
+Tabs.Premium = Window:AddTab({
+	Name = "Premium",
+	Icon = "crown",
+	Description = "Unlocked from the Manage tab",
+	Locked = true,
+	LockedReason = "Unlock it from the Manage tab",
+})
 
 -- Menu keybind, DPI scale, themes, configs (save / load / autoload) and Unload are already
 -- in the settings panel: the gear icon in the top right corner. Nothing to build here.
@@ -515,6 +524,85 @@ Console:AddButton({
 		Log:Clear()
 	end,
 })
+
+--// Manage tab: everything can be renamed, hidden, locked or removed at runtime \\--
+local TabBox = Tabs.Manage:AddLeftGroupbox("Tabs", "panels-top-left")
+
+TabBox:AddToggle("PremiumLocked", {
+	Text = "Premium tab locked",
+	Default = true,
+	Callback = function(Value)
+		Tabs.Premium:SetLocked(Value, "Unlock it from the Manage tab")
+	end,
+})
+TabBox:AddToggle("VisualsVisible", {
+	Text = "Show Visuals tab",
+	Default = true,
+	Callback = function(Value)
+		Tabs.Visuals:SetVisible(Value)
+	end,
+})
+TabBox:AddInput("ItemsTabName", {
+	Text = "Rename the Items tab",
+	Default = "Items",
+	Finished = true,
+	Callback = function(Value)
+		if Value ~= "" then
+			Tabs.Items:SetName(Value)
+		end
+	end,
+})
+TabBox:AddButton("Open Premium", function()
+	-- Window:SelectTab returns false while the tab is locked or hidden.
+	if not Window:SelectTab(Tabs.Premium) then
+		Library:Notify({ Title = "Premium is locked", Description = "Turn the toggle off first.", Time = 3 })
+	end
+end)
+
+-- Collapsible groupboxes fold when you click their header.
+local Target = Tabs.Manage:AddRightGroupbox({
+	Name = "Target groupbox",
+	Description = "Collapse me from my header",
+	IconName = "box",
+	Collapsible = true,
+})
+local Demo = Target:AddToggle("DemoToggle", { Text = "A toggle to lock" })
+Target:AddSlider("DemoSlider", { Text = "A slider", Default = 5, Min = 0, Max = 10, Rounding = 0 })
+
+local GroupBoxControls = Tabs.Manage:AddLeftGroupbox("Groupbox controls", "sliders-horizontal")
+GroupBoxControls:AddToggle("TargetLocked", {
+	Text = "Lock the target groupbox",
+	Callback = function(Value)
+		Target:SetLocked(Value, "Locked from Groupbox controls")
+	end,
+})
+GroupBoxControls:AddToggle("DemoLocked", {
+	Text = "Lock just its toggle",
+	Callback = function(Value)
+		-- Any element: SetLocked, SetVisible, SetTooltip, Destroy, GetValue
+		Demo:SetLocked(Value, "Locked by the toggle above")
+	end,
+})
+GroupBoxControls:AddInput("TargetName", {
+	Text = "Rename the target groupbox",
+	Default = "Target groupbox",
+	Finished = true,
+	Callback = function(Value)
+		Target:SetName(Value)
+	end,
+})
+GroupBoxControls:AddButton({
+	Text = "Remove the slider",
+	DoubleClick = true,
+	Func = function()
+		if Options.DemoSlider then
+			Options.DemoSlider:Destroy()
+		end
+	end,
+})
+
+local PremiumBox = Tabs.Premium:AddLeftGroupbox("Premium", "crown")
+PremiumBox:AddLabel("You unlocked the Premium tab.", true)
 
 local StartTime = os.clock()
 task.spawn(function()
