@@ -603,7 +603,11 @@ Library.Themes = {
         Stars = false,
         -- Background transparency while this theme is on (0 solid, 1 invisible); Nebula is how
         -- faint the liquid sheen is on the window, Glare the seconds between light sweeps.
-        Glass = { Window = 0.42, Container = 0.6, Groupbox = 0.92, Element = 0.88, Button = 0.45, Nebula = 0.75, Glare = 7 },
+        Glass = {
+            Window = 0.42, Container = 0.6, Groupbox = 0.92, Element = 0.88, Button = 0.45, Nebula = 0.75, Glare = 7,
+            -- While the Glass blur toggle is on: clearer, so the blur shows through.
+            Blurred = { Window = 0.6, Container = 0.76, Nebula = 0.84 },
+        },
         Duration = 18, Delay = -6, Twinkle = 4, TwinkleDelay = 0,
     },
     {
@@ -632,6 +636,8 @@ Library.Themes = {
             Window = 0.6, Container = 0.78, Groupbox = 0.88, Element = 0.82, Button = 0.55,
             Nebula = 0.86, Glare = 5, Rim = "Strong", Shine = true, Highlight = true,
             AutoBlur = true, BlurIntensity = 1, BlurInset = 0.45,
+            -- Used instead when the blur can't render (graphics quality below 8): frostier.
+            NoBlur = { Window = 0.36, Container = 0.55, Groupbox = 0.9, Element = 0.86, Button = 0.4, Nebula = 0.72 },
         },
         Duration = 20, Delay = -2, Twinkle = 4, TwinkleDelay = 0,
     },
@@ -736,6 +742,58 @@ function Library:AddTheme(Theme)
     return Theme
 end
 
+-- Glass blur only renders at graphics quality 8 and up (Roblox draws the Glass material
+-- plainly below that). Automatic quality can't be read, so it counts as yes on computers and
+-- no on phones, where automatic quality is usually low.
+local UserGameSettings
+pcall(function()
+    UserGameSettings = UserSettings():GetService("UserGameSettings")
+end)
+
+function Library:GetGraphicsQuality()
+    if not UserGameSettings then
+        return nil
+    end
+    local Ok, Level = pcall(function()
+        return UserGameSettings.SavedQualityLevel.Value
+    end)
+    return if Ok then Level else nil -- 0 = Automatic, otherwise 1 to 10
+end
+
+function Library:CanBlur()
+    local Level = Library:GetGraphicsQuality()
+    if Level == nil or Level == 0 then
+        return not Library.IsMobile
+    end
+    return Level >= 8
+end
+
+-- A blur theme's glass, with its NoBlur values swapped in when the blur can't render, so it
+-- turns into frosted glass instead of plain see-through panes.
+-- Glass.Blurred is swapped in while the optional blur is on and can render, so the glass gets
+-- clearer and the blur actually shows through.
+local function GlassFor(Theme)
+    local Glass = Theme and Theme.Glass
+    if not Glass then
+        return nil
+    end
+    local Swap
+    if Glass.NoBlur and not Library:CanBlur() then
+        Swap = Glass.NoBlur
+    elseif Glass.Blurred and Library.BlurEnabled and Library:CanBlur() then
+        Swap = Glass.Blurred
+    end
+    if not Swap then
+        return Glass
+    end
+    local Merged = table.clone(Glass)
+    for Key, Value in Swap do
+        Merged[Key] = Value
+    end
+    return Merged
+end
+Library.GlassFor = GlassFor
+
 local ThemeTransition = nil
 
 -- Instant applies straight away (used before the window is visible); otherwise the colors
@@ -766,7 +824,7 @@ function Library:SetTheme(Name, Instant)
     end
 
     -- Glass themes bring their own transparency; other themes use what SetTransparency set.
-    local Glass = Theme.Glass
+    local Glass = GlassFor(Theme)
     for Role, Base in Library.BaseTransparency do
         Library.Transparency[Role] = if Glass and Glass[Role] then Glass[Role] else Base
     end
@@ -955,7 +1013,23 @@ local function CreateNebulaSkin(Parent, Settings)
         Parent = Canvas,
     })
 
-    for Index, Spec in NebulaClouds do
+    -- Style = "Tint" (buttons, the selected tab): no clouds or stars. A soft gradient made
+    -- from the theme's colors fills the button instead, so it matches the theme without
+    -- being a copy of it.
+    local Tint = Settings.Style == "Tint"
+    local Wash, WashGradient
+    if Tint then
+        Wash = New("Frame", {
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = 5,
+            Parent = Canvas,
+        })
+        WashGradient = New("UIGradient", { Rotation = 12, Parent = Wash })
+        Skin.Wash = Wash
+    end
+
+    for Index, Spec in (if Tint then {} else NebulaClouds) do
         local Cloud = New("CanvasGroup", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             BackgroundTransparency = 1,
@@ -976,7 +1050,7 @@ local function CreateNebulaSkin(Parent, Settings)
         table.insert(Skin.Clouds, { Fill = Fill, Spec = Spec })
     end
 
-    for Index, Star in Settings.Stars or {} do
+    for Index, Star in (if Tint then {} else Settings.Stars or {}) do
         local Dot = New("Frame", {
             AnchorPoint = Vector2.new(0.5, 0.5),
             BackgroundColor3 = Color3.new(1, 1, 1),
@@ -1043,8 +1117,32 @@ local function CreateNebulaSkin(Parent, Settings)
             return
         end
         Canvas.BackgroundColor3 = Colors[4]
+        if Tint then
+            -- Deep base, then a gradient from the theme's dark tone to a softened vivid tone.
+            -- Glass themes keep it pale and see-through so it reads as tinted glass.
+            local Glass = Theme.Glass
+            Canvas.BackgroundColor3 = Colors[4]:Lerp(Colors[1], 0.35)
+            local From = Colors[1]:Lerp(Colors[4], 0.15)
+            local Mid = Colors[1]:Lerp(Colors[2], 0.45)
+            local To = Colors[2]:Lerp(Colors[3], 0.18)
+            WashGradient.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, From),
+                ColorSequenceKeypoint.new(0.55, Mid),
+                ColorSequenceKeypoint.new(1, To),
+            })
+            WashGradient.Transparency = if Glass
+                then NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0.82),
+                    NumberSequenceKeypoint.new(1, 0.6),
+                })
+                else NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0.45),
+                    NumberSequenceKeypoint.new(1, 0.22),
+                })
+        end
         if Settings.Background ~= false then
-            Canvas.BackgroundTransparency = if Theme.Glass and not Settings.Preview then Theme.Glass.Button or 0 else 0
+            local Glass = GlassFor(Theme)
+            Canvas.BackgroundTransparency = if Glass and not Settings.Preview then Glass.Button or 0 else 0
         end
         for _, Star in Skin.Stars do
             Star.Dot.Visible = Theme.Stars ~= false
@@ -1070,8 +1168,9 @@ local function CreateNebulaSkin(Parent, Settings)
         Skin.Shown = Show
 
         local Visible = Settings.VisibleTransparency or 0
-        if Settings.Backdrop and Theme and Theme.Glass and Theme.Glass.Nebula then
-            Visible = Theme.Glass.Nebula
+        local Glass = GlassFor(Theme)
+        if Settings.Backdrop and Glass and Glass.Nebula then
+            Visible = Glass.Nebula
         end
         local GroupTarget = if Show then Visible else 1
         local GlowTarget = if Show then (Settings.GlowTransparency or 0.55) else 1
@@ -1156,6 +1255,11 @@ local function CreateNebulaSkin(Parent, Settings)
         end
 
         local U = PingPong(Now, Theme.Duration or 14, Theme.Delay or 0)
+        if Tint then
+            -- A slow shimmer: the gradient slides a little back and forth.
+            WashGradient.Offset = Vector2.new((Smooth(U) - 0.5) * 0.5, 0)
+            return
+        end
         local A, B, S
         if U < 0.5 then
             A, B, S = DriftKeys[1], DriftKeys[2], Smooth(U / 0.5)
@@ -3061,15 +3165,15 @@ function Funcs:AddButton(...)
             return if Button.Nebula then 0.1 else 0.4
         end
 
-        -- Nebula themes turn every button into one of the website's nebula buttons.
+        -- Themed buttons: a gradient made from the theme's colors (see Style = "Tint").
         local Groupbox = self
         Button.Skin = CreateNebulaSkin(Base, {
             Corner = 8,
             FollowTheme = true,
             Glow = 7,
-            GlowTransparency = 0.68,
+            GlowTransparency = 0.8,
             Highlight = true,
-            Stars = PreviewStars,
+            Style = "Tint",
             ZIndex = 1,
             IsActive = function()
                 if not (Library.Toggled and Base.Visible) then
@@ -6159,8 +6263,8 @@ do
         if not Camera or not Pane or not Window then
             return
         end
-        if Pane.Parent ~= Camera then
-            Pane.Parent = Camera
+        if Pane.Parent ~= workspace then
+            Pane.Parent = workspace
         end
 
         -- Pull the edges in a little: the blur bleeds outwards and the window has round corners.
@@ -6222,7 +6326,9 @@ do
         Mesh.MeshType = Enum.MeshType.Brick
         Mesh.Offset = Vector3.new(0, 0, -0.000001)
         Mesh.Parent = Pane
-        Pane.Parent = workspace.CurrentCamera or workspace
+        Pane.Locked = true
+        -- In workspace, not the camera: that's where the trick is known to work.
+        Pane.Parent = workspace
 
         Render()
         RenderConnection = RunService.RenderStepped:Connect(Render)
@@ -6261,6 +6367,18 @@ do
             return
         end
         Active = Should
+        if Should and not Library:CanBlur() and not Library.BlurHintShown then
+            Library.BlurHintShown = true
+            local Level = Library:GetGraphicsQuality()
+            Library:Notify({
+                Title = "Blur needs better graphics",
+                Description = "Glass blur shows at graphics quality 8+"
+                    .. (if Level and Level > 0 then " (yours is " .. Level .. ")" else " (yours is Automatic)")
+                    .. ". Roblox menu > Settings > Graphics: Manual, 8 or higher.",
+                Icon = "monitor",
+                Time = 7,
+            })
+        end
         if Should then
             local Ok, Err = pcall(Start)
             if not Ok then
@@ -6273,6 +6391,18 @@ do
     end
     Library.SyncBlur = Sync
 
+    -- Changing graphics quality can turn the blur on or off, so redo the glass for it.
+    if UserGameSettings then
+        pcall(function()
+            Library:GiveSignal(UserGameSettings:GetPropertyChangedSignal("SavedQualityLevel"):Connect(function()
+                local Theme = Library.CurrentTheme
+                if Theme.Glass and (Theme.Glass.NoBlur or Theme.Glass.Blurred) then
+                    Library:SetTheme(Theme.Name)
+                end
+            end))
+        end)
+    end
+
     Library:GiveSignal(RunService.Heartbeat:Connect(Sync))
     Library:OnUnload(function()
         Active = false
@@ -6281,8 +6411,14 @@ do
 end
 
 function Library:SetBlur(Value)
+    local Changed = Library.BlurEnabled ~= (Value == true)
     Library.BlurEnabled = Value == true
     Library.SyncBlur()
+    -- Themes with Blurred values change their glass with the blur.
+    local Theme = Library.CurrentTheme
+    if Changed and Theme.Glass and Theme.Glass.Blurred then
+        Library:SetTheme(Theme.Name)
+    end
 end
 
 local function Even(Number)
@@ -6788,7 +6924,7 @@ function Library:CreateWindow(WindowInfo)
     -- Glass themes: the window itself is see-through and the glare sweeps across it.
     local function ApplyWindowTheme(Theme, Instant)
         local HasNebula = Theme.Colors ~= nil
-        local Glass = Theme.Glass
+        local Glass = GlassFor(Theme)
         local ContainerTarget = if Glass then Glass.Container or 0.5 elseif HasNebula then 0.6 else 0
         local MainTarget = if Glass then Glass.Window or 0.3 else 0
         local ShadowTarget = if Glass then 0.55 elseif HasNebula then 0.45 else 0.25
@@ -7019,12 +7155,12 @@ function Library:CreateWindow(WindowInfo)
         -- Compact layout shows tab names as tooltips.
         local TabTooltip = Library:AddTooltip(nil, nil, TabButton)
 
-        -- In nebula themes the selected tab is a nebula button too.
+        -- The selected tab gets the same theme-tinted fill as buttons.
         local TabSkin = CreateNebulaSkin(TabButton, {
             Corner = 8,
             FollowTheme = true,
             Highlight = true,
-            Stars = PreviewStars,
+            Style = "Tint",
             Wanted = false,
             ZIndex = 1,
             IsActive = function()
