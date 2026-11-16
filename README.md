@@ -566,7 +566,9 @@ print(Window.ToggleButton, Window.ToggleLock) -- nil on desktop
 - It only runs while the menu is open on a glass theme; hiding the menu or switching themes turns it off.
 - Glassy uses the strongest blur Roblox allows (depth of field near intensity 1, the maximum) and lets it reach closer to the window's edges.
 - While it runs, the game's own depth of field effects are paused, and they come back afterwards.
-- Glass renders at graphics quality 8 and up. On lower settings there's no blur, just the normal glass theme.
+- Glass renders at **graphics quality 8 and up** (Roblox menu > Settings > Graphics: Manual, 8+). Below that Roblox draws the glass pane plainly and there is no blur. Automatic quality can't be read, so it counts as "can blur" on computers and "can't" on phones. If the blur can't show, a notification says so once, and Glassy switches to frostier glass (its `NoBlur` values) so it still looks good. It switches back by itself when you raise the graphics.
+- Liquid gets clearer glass while its blur is on (its `Blurred` values), so the blur actually shows through.
+- `Library:CanBlur()` and `Library:GetGraphicsQuality()` (0 = Automatic, 1 to 10) tell you what to expect.
 
 ```lua
 Library:SetBlur(true)
@@ -595,8 +597,7 @@ Players pick a theme from the **Theme** section of the settings panel. Each opti
 
 Every theme is animated. They recreate the animated buttons from [website5](https://github.com/iamdookie1/website5), using the same colors, cloud layout, drift keyframes, timings and star positions. Picking one:
 
-- turns **every button** into one of those nebula buttons: drifting clouds, twinkling stars, an inner top highlight and a colored glow that brightens on hover;
-- makes the **selected tab** a nebula button too;
+- gives **every button** and the **selected tab** a fill made from the theme's colors: a soft gradient from its dark tone to a softened vivid tone that slowly shimmers, with an inner top highlight and a faint colored glow that brightens on hover. They match the theme without being a copy of the theme card;
 - recolors the rest of the UI from the theme's four colors and turns the window shadow into a colored glow;
 - adds a faint, slowly drifting nebula behind the whole window.
 
@@ -616,7 +617,7 @@ Library:AddTheme({
 })
 ```
 
-A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). Optional: `Rim = "Strong"` (brighter rims all round), `Shine = true` (light along top edges), `Highlight = true` (top-left glow), `AutoBlur = true` (always blur), `BlurIntensity` (0 to 1) and `BlurInset` (below 1 lets the blur reach closer to the edges). `Stars = false` turns the stars off. A glass theme's `Scheme` can also set `GroupboxColor` and `ElementColor` (the frost tint of groupboxes and elements) and `RimColor` (borders, which get a top-left light in glass themes); other themes use Main / Secondary / Outline for these. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
+A theme can be glass like Liquid by adding a `Glass` table: background transparency for `Window`, `Container`, `Groupbox`, `Element` and nebula `Button`s (0 solid, 1 invisible), how faint the window's `Nebula` sheen is, and `Glare` (seconds between light sweeps). Optional: `Rim = "Strong"` (brighter rims all round), `Shine = true` (light along top edges), `Highlight = true` (top-left glow), `AutoBlur = true` (always blur), `BlurIntensity` (0 to 1), `BlurInset` (below 1 lets the blur reach closer to the edges), `NoBlur = { ... }` (values used when the blur can't render) and `Blurred = { ... }` (values used while the optional blur is on). `Stars = false` turns the stars off. A glass theme's `Scheme` can also set `GroupboxColor` and `ElementColor` (the frost tint of groupboxes and elements) and `RimColor` (borders, which get a top-left light in glass themes); other themes use Main / Secondary / Outline for these. While a glass theme is on, its transparency replaces what `Library:SetTransparency` set; switching to another theme brings your values back.
 
 The accent always comes from the theme, so `Library:SetAccent` only prints a warning.
 
